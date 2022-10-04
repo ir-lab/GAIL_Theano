@@ -1,7 +1,7 @@
 import numpy as np
 import theano
 from theano import tensor
-from . import util
+from gail_theano.policyopt import util
 
 def flatcat(arrays):
     '''

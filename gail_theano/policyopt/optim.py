@@ -2,7 +2,7 @@ import numpy as np
 import scipy.sparse.linalg as ssl
 from . import util
 from collections import namedtuple
-from . import nn
+from gail_theano.policyopt import nn
 
 
 def adagrad(grad_func, x0, learning_rate, eps=1e-8):
