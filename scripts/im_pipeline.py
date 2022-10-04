@@ -12,35 +12,74 @@ from policyopt import util
 import subprocess, tempfile, datetime
 def create_pbs_script(commands, outputfiles, jobname, queue, nodes, ppn):
     assert len(commands) == len(outputfiles)
+#     template = '''#!/bin/bash
+
+# #PBS -l walltime=72:00:00,nodes={nodes}:ppn={ppn},mem=10gb
+# #PBS -N {jobname}
+# #PBS -q {queue}
+# #PBS -o /dev/null
+# #PBS -e /dev/null
+
+# sleep $[ ( $RANDOM % 120 ) + 1 ]s
+
+# read -r -d '' COMMANDS << END
+# {cmds_str}
+# END
+# cmd=$(echo "$COMMANDS" | awk "NR == $PBS_ARRAYID")
+# echo $cmd
+
+# read -r -d '' OUTPUTFILES << END
+# {outputfiles_str}
+# END
+# outputfile=$PBS_O_WORKDIR/$(echo "$OUTPUTFILES" | awk "NR == $PBS_ARRAYID")
+# echo $outputfile
+# # Make sure output directory exists
+# mkdir -p "`dirname \"$outputfile\"`" 2>/dev/null
+
+# cd $PBS_O_WORKDIR
+
+# echo $cmd >$outputfile
+# eval $cmd >>$outputfile 2>&1
+# '''
     template = '''#!/bin/bash
 
-#PBS -l walltime=72:00:00,nodes={nodes}:ppn={ppn},mem=10gb
-#PBS -N {jobname}
-#PBS -q {queue}
-#PBS -o /dev/null
-#PBS -e /dev/null
+#SBATCH -p gpu
 
-sleep $[ ( $RANDOM % 120 ) + 1 ]s
+#SBATCH -o /dev/null
+#SBATCH -e /dev/null
+
+#SBATCH --mem=3G
+#SBATCH --qos=wildfire
+#SBATCH -t 0-72:00                   # wall time (D-HH:MM)
+#SBATCH --mail-type=ALL             # Send a notification when a job starts, stops, or fails
+#SBATCH --mail-user=mdrolet@asu.edu # send-to address
+
+module purge
+module load singularity/3.8.0
 
 read -r -d '' COMMANDS << END
 {cmds_str}
 END
-cmd=$(echo "$COMMANDS" | awk "NR == $PBS_ARRAYID")
+cmd=$(echo "$COMMANDS" | awk "NR == $SLURM_ARRAY_TASK_ID")
 echo $cmd
 
 read -r -d '' OUTPUTFILES << END
 {outputfiles_str}
 END
-outputfile=$PBS_O_WORKDIR/$(echo "$OUTPUTFILES" | awk "NR == $PBS_ARRAYID")
+outputfile=$(echo "$OUTPUTFILES" | awk "NR == $SLURM_ARRAY_TASK_ID")
 echo $outputfile
 # Make sure output directory exists
 mkdir -p "`dirname \"$outputfile\"`" 2>/dev/null
 
-cd $PBS_O_WORKDIR
-
 echo $cmd >$outputfile
-eval $cmd >>$outputfile 2>&1
+singularity run --env USER=$SLURM_ARRAY_TASK_ID --nv imitation.sif $cmd >>$outputfile 2>&1
 '''
+# eval $cmd >>$outputfile 2>&1
+# module load anaconda2/4.4.0
+# source activate imitation
+# export PYTHONPATH=$PYTHONPATH:/home/mdrolet/imitation_baseline/imitation
+#SBATCH --ntasks=1
+
     return template.format(
         jobname=jobname,
         queue=queue,
@@ -49,10 +88,11 @@ eval $cmd >>$outputfile 2>&1
         nodes=nodes,
         ppn=ppn)
 
-def runpbs(cmd_templates, outputfilenames, argdicts, jobname, queue, nodes, ppn, job_range=None, outputfile_dir=None, qsub_script_copy=None):
+def runpbs(cmd_templates, outputfilenames, argdicts, jobname, queue, nodes, ppn, 
+           job_range=None, outputfile_dir=None, qsub_script_copy=None):
     assert len(cmd_templates) == len(outputfilenames) == len(argdicts)
     num_cmds = len(cmd_templates)
-
+    
     outputfile_dir = outputfile_dir if outputfile_dir is not None else 'logs_%s_%s' % (jobname, datetime.datetime.now().strftime('%Y-%m-%d_%H:%M:%S'))
 
     cmds, outputfiles = [], []
@@ -61,26 +101,27 @@ def runpbs(cmd_templates, outputfilenames, argdicts, jobname, queue, nodes, ppn,
         outputfiles.append(os.path.join(outputfile_dir, '{:04d}_{}'.format(i+1, outputfilenames[i])))
 
     script = create_pbs_script(cmds, outputfiles, jobname, queue, nodes, ppn)
-    print script
+    print(script)
     with tempfile.NamedTemporaryFile(suffix='.sh') as f:
         f.write(script)
         f.flush()
 
         if job_range is not None:
             assert len(job_range.split('-')) == 2, 'Invalid job range'
-            cmd = 'qsub -t %s %s' % (job_range, f.name)
+            # cmd = 'qsub -t %s %s' % (job_range, f.name)
+            cmd = 'sbatch --array=%s %s' % (job_range, f.name)
         else:
-            cmd = 'qsub -t %d-%d %s' % (1, len(cmds), f.name)
+            cmd = 'sbatch --array=[%d-%d]%%23 %s' % (1, len(cmds), f.name)
 
-        print 'Running command:', cmd
-        print 'ok ({} jobs)? y/n'.format(num_cmds)
+        print('Running command:', cmd)
+        print('ok ({} jobs)? y/n'.format(num_cmds))
         if raw_input() == 'y':
             # Write a copy of the script
             if qsub_script_copy is not None:
                 assert not os.path.exists(qsub_script_copy)
                 with open(qsub_script_copy, 'w') as fcopy:
                     fcopy.write(script)
-                print 'qsub script written to {}'.format(qsub_script_copy)
+                print('qsub script written to {}'.format(qsub_script_copy))
             # Run qsub
             subprocess.check_call(cmd, shell=True)
 
@@ -97,14 +138,14 @@ def load_trained_policy_and_mdp(env_name, policy_state_str):
 
     # Load the saved state
     policy_file, policy_key = util.split_h5_name(policy_state_str)
-    print 'Loading policy parameters from %s in %s' % (policy_key, policy_file)
+    print('Loading policy parameters from %s in %s' % (policy_key, policy_file))
     with h5py.File(policy_file, 'r') as f:
         train_args = json.loads(f.attrs['args'])
 
     # Initialize the MDP
-    print 'Loading environment', env_name
+    print('Loading environment', env_name)
     mdp = rlgymenv.RLGymMDP(env_name)
-    print 'MDP observation space, action space sizes: %d, %d\n' % (mdp.obs_space.dim, mdp.action_space.storage_size)
+    print('MDP observation space, action space sizes: %d, %d\n' % (mdp.obs_space.dim, mdp.action_space.storage_size))
 
     # Initialize the policy
     nn.reset_global_scope()
@@ -154,9 +195,9 @@ def exec_saved_policy(env_name, policystr, num_trajs, deterministic, max_traj_le
 
     # Load MDP and policy
     mdp, policy, _ = load_trained_policy_and_mdp(env_name, policystr)
-    max_traj_len = min(mdp.env_spec.timestep_limit, max_traj_len) if max_traj_len is not None else mdp.env_spec.timestep_limit
+    max_traj_len = min(mdp.env_spec.max_episode_steps, max_traj_len) if max_traj_len is not None else mdp.env_spec.max_episode_steps
 
-    print 'Sampling {} trajs (max len {}) from policy {} in {}'.format(num_trajs, max_traj_len, policystr, env_name)
+    print('Sampling {} trajs (max len {}) from policy {} in {}'.format(num_trajs, max_traj_len, policystr, env_name))
 
     # Sample trajs
     trajbatch = mdp.sim_mp(
@@ -170,6 +211,19 @@ def exec_saved_policy(env_name, policystr, num_trajs, deterministic, max_traj_le
 
     return trajbatch, policy, mdp
 
+def eval_snapshot2(env_name, checkptfile, snapshot_idx, num_trajs, deterministic):
+    policystr = '{}/snapshots/iter{:07d}'.format(checkptfile, snapshot_idx)
+    trajbatch, _, _ = exec_saved_policy(
+        env_name,
+        policystr,
+        num_trajs,
+        deterministic=deterministic,
+        max_traj_len=None)
+    returns = trajbatch.r.padded(fill=0.).sum(axis=1)
+    actions = trajbatch.a.padded(fill=0.)
+    lengths = np.array([len(traj) for traj in trajbatch])
+    util.header('{} gets return {} +/- {}'.format(policystr, returns.mean(), returns.std()))
+    return returns, lengths, actions
 
 def eval_snapshot(env_name, checkptfile, snapshot_idx, num_trajs, deterministic):
     policystr = '{}/snapshots/iter{:07d}'.format(checkptfile, snapshot_idx)
@@ -207,10 +261,10 @@ def phase0_sampletrajs(spec, specfilename):
         avgr = trajbatch.r.stacked.mean()
         lengths = np.array([len(traj) for traj in trajbatch])
         ent = policy._compute_actiondist_entropy(trajbatch.adist.stacked).mean()
-        print 'ret: {} +/- {}'.format(returns.mean(), returns.std())
-        print 'avgr: {}'.format(avgr)
-        print 'len: {} +/- {}'.format(lengths.mean(), lengths.std())
-        print 'ent: {}'.format(ent)
+        print('ret: {} +/- {}'.format(returns.mean(), returns.std()))
+        print('avgr: {}'.format(avgr))
+        print('len: {} +/- {}'.format(lengths.mean(), lengths.std()))
+        print('ent: {}'.format(ent))
 
         # Save the trajs to a file
         with h5py.File(taskname2outfile[task['name']], 'w') as f:
@@ -228,7 +282,7 @@ def phase0_sampletrajs(spec, specfilename):
         util.header('Wrote {}'.format(taskname2outfile[task['name']]))
 
 
-def phase1_train(spec, specfilename):
+def phase1_train(spec, specfilename, run_local=True):
     util.header('=== Phase 1: training ===')
 
     # Generate array job that trains all algorithms
@@ -240,7 +294,7 @@ def phase1_train(spec, specfilename):
     checkptdir = os.path.join(spec['options']['storagedir'], spec['options']['checkpt_subdir'])
     util.mkdir_p(checkptdir)
     # Make sure checkpoint dir is empty
-    assert not os.listdir(checkptdir), 'Checkpoint directory {} is not empty!'.format(checkptdir)
+    # assert not os.listdir(checkptdir), 'Checkpoint directory {} is not empty!'.format(checkptdir)
 
     # Assemble the commands to run on the cluster
     cmd_templates, outputfilenames, argdicts = [], [], []
@@ -263,19 +317,26 @@ def phase1_train(spec, specfilename):
                     })
 
     pbsopts = spec['options']['pbs']
-    runpbs(
-        cmd_templates, outputfilenames, argdicts,
-        jobname=pbsopts['jobname'], queue=pbsopts['queue'], nodes=1, ppn=pbsopts['ppn'],
-        job_range=pbsopts['range'] if 'range' in pbsopts else None,
-        qsub_script_copy=os.path.join(checkptdir, 'qsub_script.sh')
-    )
+    
+    if run_local:
+        for i in range(len(cmd_templates)):
+            cmd = cmd_templates[i].format(**argdicts[i])
+            print(cmd)
+            os.system(cmd )
+    else:
+        script = runpbs(
+            cmd_templates, outputfilenames, argdicts,
+            jobname=pbsopts['jobname'], queue=pbsopts['queue'], nodes=1, ppn=pbsopts['ppn'],
+            job_range=pbsopts['range'] if 'range' in pbsopts else None,
+            qsub_script_copy=os.path.join(checkptdir, 'qsub_script.sh')
+        )
 
     # Copy the pipeline yaml file to the output dir too
     shutil.copyfile(specfilename, os.path.join(checkptdir, 'pipeline.yaml'))
 
     # Keep git commit
     import subprocess
-    git_hash = subprocess.check_output('git rev-parse HEAD', shell=True).strip()
+    git_hash = subprocess.check_output('git rev-parse HEAD', shell=True).strip().decode('utf-8')
     with open(os.path.join(checkptdir, 'git_hash.txt'), 'w') as f:
         f.write(git_hash + '\n')
 
@@ -288,10 +349,10 @@ def phase2_eval(spec, specfilename):
     # This is where model logs are stored.
     # We will also store the evaluation here.
     checkptdir = os.path.join(spec['options']['storagedir'], spec['options']['checkpt_subdir'])
-    print 'Evaluating results in {}'.format(checkptdir)
+    print('Evaluating results in {}'.format(checkptdir))
 
     results_full_path = os.path.join(checkptdir, spec['options']['results_filename'])
-    print 'Will store results in {}'.format(results_full_path)
+    print('Will store results in {}'.format(results_full_path))
     if os.path.exists(results_full_path):
         raise RuntimeError('Results file {} already exists'.format(results_full_path))
 
@@ -313,20 +374,22 @@ def phase2_eval(spec, specfilename):
                     evals_to_do.append((task, alg, num_trajs, run, checkptfile))
 
     if nonexistent_checkptfiles:
-        print 'Cannot find checkpoint files:\n', '\n'.join(nonexistent_checkptfiles)
+        print('Cannot find checkpoint files:\n', '\n'.join(nonexistent_checkptfiles))
         raise RuntimeError
 
     # Walk through all saved checkpoints
     collected_results = []
-    for i_eval, (task, alg, num_trajs, run, checkptfile) in enumerate(evals_to_do):
-        util.header('Evaluating run {}/{}: alg={},task={},num_trajs={},run={}'.format(
-            i_eval+1, len(evals_to_do), alg['name'], task['name'], num_trajs, run))
+    colors = ['red', 'green', 'blue']
+    for i_eval, (task, alg, num_trajs, run, checkptfile) in enumerate([evals_to_do[0]]):
+        util.header(f"Evaluating run {i_eval+1}/{len(evals_to_do)}: alg={alg['name']},task={task['name']},num_trajs={num_trajs},run={run}.")
 
         # Load the task's traj dataset to see how well the expert does
-        with h5py.File(taskname2dset[task['name']], 'r') as trajf:
-            # Expert's true return and traj lengths
-            ex_traj_returns = trajf['r_B_T'][...].sum(axis=1)
-            ex_traj_lengths = trajf['len_B'][...]
+        # with h5py.File(taskname2dset[task['name']], 'r') as trajf:
+        #     # Expert's true return and traj lengths
+        #     ex_traj_returns = trajf['r_B_T'][...].sum(axis=1)
+        #     ex_traj_returns_all = trajf['r_B_T'][...]
+        #     ex_traj_lengths = trajf['len_B'][...]
+        #     ex_traj_a = trajf['a_B_T_Da'][...]
 
         # Load the checkpoint file
         with pd.HDFStore(checkptfile, 'r') as f:
@@ -347,31 +410,62 @@ def phase2_eval(spec, specfilename):
                 assert all(name.startswith('iter') for name in snapshot_names)
                 snapshot_inds = sorted([int(name[len('iter'):]) for name in snapshot_names])
                 best_snapshot_idx = snapshot_inds[-1]
-                alg_traj_returns, alg_traj_lengths = eval_snapshot(
+                alg_traj_returns, alg_traj_lengths, acts = eval_snapshot2(
                     task['env'], checkptfile, best_snapshot_idx,
                     spec['options']['eval_num_trajs'], deterministic=True)
+                
+                if i_eval == 0:
+                    import matplotlib.pyplot as plt
+                    import seaborn as sns
+                    fig, ax = plt.subplots(1,3, figsize=(10,4))
+                    ax[0].set_title("GAIL Actions Dist")
+                    fig.tight_layout()
 
+                    actions_car = pd.read_csv('scripts/action_car2.csv')
+                    for idx in range(actions_car.shape[1]):
+                        act = actions_car.iloc[:,idx].dropna().to_numpy()
+                        ax[2].plot(np.arange(act.shape[0]), act.flatten())
+                        ax[2].set_ylabel('Action')
+                        ax[2].set_xlabel('Timesteps (T)')
+                    fig.tight_layout()
+                    ax[2].set_title("IBC Actions Dist")
+                    rewards_car = pd.read_csv('scripts/return_car2.csv').iloc[:,0].to_numpy()
+                    ax[1].plot(rewards_car, label='IBC')
+                    # ax[1].legend(bbox_to_anchor=(0.18, 1.1), loc='upper left', ncol=2)
+                    ax[1].set_ylabel('Rewards')
+                    ax[1].set_xlabel('Epsiode Number')
+                
+                for act in acts:
+                    idxs = np.argwhere(act.flatten() != 0).flatten()
+                    ac = act[idxs]
+                    ax[0].plot(np.arange(ac.shape[0]), ac.flatten())
+                    ax[0].set_ylabel('Action')
+                    ax[0].set_xlabel('Timesteps (T)')
+                
+                ax[1].plot(np.arange(len(alg_traj_returns)), alg_traj_returns, label='GAIL')
+                # Ravi's CSVs
             else:
                 raise NotImplementedError('Analysis not implemented for {}'.format(alg['name']))
 
-            collected_results.append({
-                # Trial info
-                'alg': alg['name'],
-                'task': task['name'],
-                'num_trajs': num_trajs,
-                'run': run,
-                # Expert performance
-                'ex_traj_returns': ex_traj_returns,
-                'ex_traj_lengths': ex_traj_lengths,
-                # Learned policy performance
-                'alg_traj_returns': alg_traj_returns,
-                'alg_traj_lengths': alg_traj_lengths,
-            })
+    #         collected_results.append({
+    #             # Trial info
+    #             'alg': alg['name'],
+    #             'task': task['name'],
+    #             'num_trajs': num_trajs,
+    #             'run': run,
+    #             # Expert performance
+    #             'ex_traj_returns': ex_traj_returns,
+    #             'ex_traj_lengths': ex_traj_lengths,
+    #             # Learned policy performance
+    #             'alg_traj_returns': alg_traj_returns,
+    #             'alg_traj_lengths': alg_traj_lengths,
+    #         })
 
-    collected_results = pd.DataFrame(collected_results)
-    with pd.HDFStore(results_full_path, 'w') as outf:
-        outf['results'] = collected_results
-
+    # collected_results = pd.DataFrame(collected_results)
+    # with pd.HDFStore(results_full_path, 'w') as outf:
+    #     outf['results'] = collected_results
+    ax[1].legend()
+    plt.show()
 
 def main():
     np.set_printoptions(suppress=True, precision=5, linewidth=1000)
@@ -388,7 +482,7 @@ def main():
     args = parser.parse_args()
 
     with open(args.spec, 'r') as f:
-        spec = yaml.load(f)
+        spec = yaml.safe_load(f)
 
     phases[args.phase](spec, args.spec)
 

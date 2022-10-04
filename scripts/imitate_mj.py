@@ -13,23 +13,37 @@ SIMPLE_ARCHITECTURE = '[{"type": "fc", "n": 100}, {"type": "nonlin", "func": "ta
 
 def load_dataset(filename, limit_trajs, data_subsamp_freq):
     # Load expert data
-    with h5py.File(filename, 'r') as f:
-        # Read data as written by vis_mj.py
-        full_dset_size = f['obs_B_T_Do'].shape[0] # full dataset size
-        dset_size = min(full_dset_size, limit_trajs) if limit_trajs is not None else full_dset_size
+    # with h5py.File(filename, 'r') as f:
+    #     # Read data as written by vis_mj.py
+    #     full_dset_size = f['obs_B_T_Do'].shape[0] # full dataset size
+    #     dset_size = min(full_dset_size, limit_trajs) if limit_trajs is not None else full_dset_size
 
-        exobs_B_T_Do = f['obs_B_T_Do'][:dset_size,...][...]
-        exa_B_T_Da = f['a_B_T_Da'][:dset_size,...][...]
-        exr_B_T = f['r_B_T'][:dset_size,...][...]
-        exlen_B = f['len_B'][:dset_size,...][...]
-
-    print 'Expert dataset size: {} transitions ({} trajectories)'.format(exlen_B.sum(), len(exlen_B))
-    print 'Expert average return:', exr_B_T.sum(axis=1).mean()
+    #     exobs_B_T_Do = f['obs_B_T_Do'][:dset_size,...][...]
+    #     exa_B_T_Da = f['a_B_T_Da'][:dset_size,...][...]
+    #     exr_B_T = f['r_B_T'][:dset_size,...][...]
+    #     exlen_B = f['len_B'][:dset_size,...][...]
+    
+    import pickle
+    with open('ddpg/ddpg_expert.pkl', 'rb') as fp:
+        data = pickle.load(fp)
+    
+    dset_size = 10
+    exobs_B_T_Do = data['observations']
+    exa_B_T_Da = data['actions']
+    exr_B_T = data['rewards']
+    exlen_B = data['lengths']
+    # se = np.mean([ sum(exr_B_T[i]) for i in range(len(exr_B_T)) ])
+    # se1 = np.mean([ sum(exr_B_T1[i]) for i in range(len(exr_B_T1)) ])
+    # obs = [exobs_B_T_Do[i][0,0] for i in range(len(exobs_B_T_Do))]
+    # obs1 = [exobs_B_T_Do1[i][0,0] for i in range(len(exobs_B_T_Do1))]
+    
+    print('Expert dataset size: {} transitions ({} trajectories)'.format(exlen_B.sum(), len(exlen_B)))
+    print('Expert average return:', exr_B_T.sum(axis=1).mean())
 
     # Stack everything together
     start_times_B = np.random.RandomState(0).randint(0, data_subsamp_freq, size=exlen_B.shape[0])
-    print 'start times'
-    print start_times_B
+    print('start times')
+    print(start_times_B)
     exobs_Bstacked_Do = np.concatenate(
         [exobs_B_T_Do[i,start_times_B[i]:l:data_subsamp_freq,:] for i, l in enumerate(exlen_B)],
         axis=0)
@@ -41,8 +55,8 @@ def load_dataset(filename, limit_trajs, data_subsamp_freq):
 
     assert exobs_Bstacked_Do.shape[0] == exa_Bstacked_Da.shape[0] == ext_Bstacked.shape[0]# == np.ceil(exlen_B.astype(float)/data_subsamp_freq).astype(int).sum() > 0
 
-    print 'Subsampled data every {} timestep(s)'.format(data_subsamp_freq)
-    print 'Final dataset size: {} transitions (average {} per traj)'.format(exobs_Bstacked_Do.shape[0], float(exobs_Bstacked_Do.shape[0])/dset_size)
+    print('Subsampled data every {} timestep(s)'.format(data_subsamp_freq))
+    print('Final dataset size: {} transitions (average {} per traj)'.format(exobs_Bstacked_Do.shape[0], float(exobs_Bstacked_Do.shape[0])/dset_size))
 
     return exobs_Bstacked_Do, exa_Bstacked_Da, ext_Bstacked
 
@@ -136,8 +150,8 @@ def main():
     assert ext_Bstacked.ndim == 1
 
     # Start optimization
-    max_traj_len = args.max_traj_len if args.max_traj_len is not None else mdp.env_spec.timestep_limit
-    print 'Max traj len:', max_traj_len
+    max_traj_len = args.max_traj_len if args.max_traj_len is not None else mdp.env_spec.max_episode_steps
+    print('Max traj len:', max_traj_len)
 
     if args.mode == 'bclone':
         # For behavioral cloning, only print output when evaluating
@@ -169,7 +183,7 @@ def main():
                 ent_reg_weight=args.reward_ent_reg_weight,
                 enable_inputnorm=True,
                 include_time=bool(args.reward_include_time),
-                time_scale=1./mdp.env_spec.timestep_limit,
+                time_scale=1./mdp.env_spec.max_episode_steps,
                 favor_zero_expert_reward=bool(args.favor_zero_expert_reward),
                 varscope_name='TransitionClassifier')
         elif args.reward_type in ['l2ball', 'simplex']:
@@ -180,7 +194,7 @@ def main():
                 enable_inputnorm=True,
                 favor_zero_expert_reward=bool(args.favor_zero_expert_reward),
                 include_time=bool(args.reward_include_time),
-                time_scale=1./mdp.env_spec.timestep_limit,
+                time_scale=1./mdp.env_spec.max_episode_steps,
                 exobs_Bex_Do=exobs_Bstacked_Do,
                 exa_Bex_Da=exa_Bstacked_Da,
                 ext_Bex=ext_Bstacked)
@@ -194,7 +208,7 @@ def main():
             enable_vnorm=True,
             max_kl=args.vf_max_kl,
             damping=args.vf_cg_damping,
-            time_scale=1./mdp.env_spec.timestep_limit,
+            time_scale=1./mdp.env_spec.max_episode_steps,
             varscope_name='ValueFunc')
 
         opt = imitation.ImitationOptimizer(
@@ -223,32 +237,32 @@ def main():
 
     # Run optimizer
     log = nn.TrainingLog(args.log, [('args', argstr)])
-    for i in xrange(args.max_iter):
+    for i in range(args.max_iter):
         iter_info = opt.step()
         log.write(iter_info, print_header=i % (20*args.print_freq) == 0, display=i % args.print_freq == 0)
         if args.save_freq != 0 and i % args.save_freq == 0 and args.log is not None:
             log.write_snapshot(policy, i)
 
-        if args.plot_freq != 0 and i % args.plot_freq == 0:
-            exdata_N_Doa = np.concatenate([exobs_Bstacked_Do, exa_Bstacked_Da], axis=1)
-            pdata_M_Doa = np.concatenate([opt.last_sampbatch.obs.stacked, opt.last_sampbatch.a.stacked], axis=1)
+        # if args.plot_freq != 0 and i % args.plot_freq == 0:
+        #     exdata_N_Doa = np.concatenate([exobs_Bstacked_Do, exa_Bstacked_Da], axis=1)
+        #     pdata_M_Doa = np.concatenate([opt.last_sampbatch.obs.stacked, opt.last_sampbatch.a.stacked], axis=1)
 
-            # Plot reward
-            import matplotlib.pyplot as plt
-            _, ax = plt.subplots()
-            idx1, idx2 = 0,1
-            range1 = (min(exdata_N_Doa[:,idx1].min(), pdata_M_Doa[:,idx1].min()), max(exdata_N_Doa[:,idx1].max(), pdata_M_Doa[:,idx1].max()))
-            range2 = (min(exdata_N_Doa[:,idx2].min(), pdata_M_Doa[:,idx2].min()), max(exdata_N_Doa[:,idx2].max(), pdata_M_Doa[:,idx2].max()))
-            reward.plot(ax, idx1, idx2, range1, range2, n=100)
+        #     # Plot reward
+        #     import matplotlib.pyplot as plt
+        #     _, ax = plt.subplots()
+        #     idx1, idx2 = 0,1
+        #     range1 = (min(exdata_N_Doa[:,idx1].min(), pdata_M_Doa[:,idx1].min()), max(exdata_N_Doa[:,idx1].max(), pdata_M_Doa[:,idx1].max()))
+        #     range2 = (min(exdata_N_Doa[:,idx2].min(), pdata_M_Doa[:,idx2].min()), max(exdata_N_Doa[:,idx2].max(), pdata_M_Doa[:,idx2].max()))
+        #     reward.plot(ax, idx1, idx2, range1, range2, n=100)
 
-            # Plot expert data
-            ax.scatter(exdata_N_Doa[:,idx1], exdata_N_Doa[:,idx2], color='blue', s=1, label='expert')
+        #     # Plot expert data
+        #     ax.scatter(exdata_N_Doa[:,idx1], exdata_N_Doa[:,idx2], color='blue', s=1, label='expert')
 
-            # Plot policy samples
-            ax.scatter(pdata_M_Doa[:,idx1], pdata_M_Doa[:,idx2], color='red', s=1, label='apprentice')
+        #     # Plot policy samples
+        #     ax.scatter(pdata_M_Doa[:,idx1], pdata_M_Doa[:,idx2], color='red', s=1, label='apprentice')
 
-            ax.legend()
-            plt.show()
+        #     ax.legend()
+        #     plt.show()
 
 
 if __name__ == '__main__':
