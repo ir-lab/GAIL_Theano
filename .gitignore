@@ -1,6 +1,8 @@
 imitation_runs
 classic_policies
 ddpg/all_car_oracles
+policyopt/__pycache__
+environments/__pycache__
 history
 **.pyc
 # Byte-compiled / optimized / DLL files
