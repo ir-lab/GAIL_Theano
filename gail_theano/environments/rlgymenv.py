@@ -1,5 +1,5 @@
 import numpy as np
-import policyopt
+from gail_theano import policyopt
 
 import gym
 from gym import spaces, envs
