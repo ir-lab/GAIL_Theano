@@ -4,8 +4,8 @@ import h5py
 import numpy as np
 import yaml
 import os, os.path, shutil
-from policyopt import util
-
+from gail.policyopt import util
+from proto_tools import proto_logger
 
 
 # PBS
@@ -132,9 +132,9 @@ def runpbs(cmd_templates, outputfilenames, argdicts, jobname, queue, nodes, ppn,
 
 def load_trained_policy_and_mdp(env_name, policy_state_str):
     import gym
-    import policyopt
-    from policyopt import nn, rl
-    from environments import rlgymenv
+    import gail.policyopt as policyopt
+    from gail.policyopt import nn, rl
+    from gail.environments import rlgymenv
 
     # Load the saved state
     policy_file, policy_key = util.split_h5_name(policy_state_str)
@@ -179,7 +179,7 @@ def gen_taskname2outfile(spec, assert_not_exists=False):
     util.mkdir_p(trajdir)
     for task in spec['tasks']:
         assert task['name'] not in taskname2outfile
-        fname = os.path.join(trajdir, 'trajs_{}.h5'.format(task['name']))
+        fname = os.path.join(trajdir, f"trajs_{task['name']}")
         if assert_not_exists:
             assert not os.path.exists(fname), 'Traj destination {} already exists'.format(fname)
         taskname2outfile[task['name']] = fname
@@ -188,9 +188,9 @@ def gen_taskname2outfile(spec, assert_not_exists=False):
 
 
 def exec_saved_policy(env_name, policystr, num_trajs, deterministic, max_traj_len=None):
-    import policyopt
-    from policyopt import SimConfig, rl, util, nn, tqdm
-    from environments import rlgymenv
+    import gail.policyopt as policyopt
+    from gail.policyopt import SimConfig, rl, util, nn, tqdm
+    from gail.environments import rlgymenv
     import gym
 
     # Load MDP and policy
@@ -206,7 +206,7 @@ def exec_saved_policy(env_name, policystr, num_trajs, deterministic, max_traj_le
         cfg=policyopt.SimConfig(
             min_num_trajs=num_trajs,
             min_total_sa=-1,
-            batch_size=None,
+            batch_size=1,
             max_traj_len=max_traj_len))
 
     return trajbatch, policy, mdp
@@ -252,21 +252,21 @@ def phase0_sampletrajs(spec, specfilename):
         print('avgr: {}'.format(avgr))
         print('len: {} +/- {}'.format(lengths.mean(), lengths.std()))
         print('ent: {}'.format(ent))
-
+        proto_logger.export_samples_from_expert(trajbatch, lengths, taskname2outfile)
         # Save the trajs to a file
-        with h5py.File(taskname2outfile[task['name']], 'w') as f:
-            def write(dsetname, a):
-                f.create_dataset(dsetname, data=a, compression='gzip', compression_opts=9)
-            # Right-padded trajectory data
-            write('obs_B_T_Do', trajbatch.obs.padded(fill=0.))
-            write('a_B_T_Da', trajbatch.a.padded(fill=0.))
-            write('r_B_T', trajbatch.r.padded(fill=0.))
-            # Trajectory lengths
-            write('len_B', np.array([len(traj) for traj in trajbatch], dtype=np.int32))
-            # # Also save args to this script
-            # argstr = json.dumps(vars(args), separators=(',', ':'), indent=2)
-            # f.attrs['args'] = argstr
-        util.header('Wrote {}'.format(taskname2outfile[task['name']]))
+        # with h5py.File(taskname2outfile[task['name']], 'w') as f:
+        #     def write(dsetname, a):
+        #         f.create_dataset(dsetname, data=a, compression='gzip', compression_opts=9)
+        #     # Right-padded trajectory data
+        #     write('obs_B_T_Do', trajbatch.obs.padded(fill=0.))
+        #     write('a_B_T_Da', trajbatch.a.padded(fill=0.))
+        #     write('r_B_T', trajbatch.r.padded(fill=0.))
+        #     # Trajectory lengths
+        #     write('len_B', np.array([len(traj) for traj in trajbatch], dtype=np.int32))
+        #     # # Also save args to this script
+        #     # argstr = json.dumps(vars(args), separators=(',', ':'), indent=2)
+        #     # f.attrs['args'] = argstr
+        # util.header('Wrote {}'.format(taskname2outfile[task['name']]))
 
 
 def phase1_train(spec, specfilename, run_local=True):
