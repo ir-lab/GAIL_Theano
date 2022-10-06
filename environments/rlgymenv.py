@@ -1,5 +1,5 @@
 import numpy as np
-from gail_theano import policyopt
+import policyopt
 
 import gym
 from gym import spaces, envs
@@ -12,10 +12,8 @@ class RLGymSim(policyopt.Simulation):
     def __init__(self, env_name):
         self.env = envs.make(env_name)
         self.action_space = self.env.action_space
-        if env_name == 'MountainCarContinuous-v0':
-            self.curr_obs = self.env.reset(options={'low': -0.58, 'high' : -0.42})
-        else:
-            self.curr_obs = self.env.reset()
+        # self.curr_obs, _ = self.env.reset()
+        self.curr_obs = self.env.reset()
         self.is_done = False
 
     def step(self, action):

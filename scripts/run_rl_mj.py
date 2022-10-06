@@ -3,9 +3,9 @@ import json
 
 import numpy as np
 
-from gail_theano.environments import rlgymenv
-from gail_theano import policyopt
-from gail_theano.policyopt import SimConfig, rl, util, nn
+from environments import rlgymenv
+import policyopt
+from policyopt import SimConfig, rl, util, nn
 
 TINY_ARCHITECTURE = '[{"type": "fc", "n": 64}, {"type": "nonlin", "func": "tanh"}, {"type": "fc", "n": 64}, {"type": "nonlin", "func": "tanh"}]'
 SIMPLE_ARCHITECTURE = '[{"type": "fc", "n": 100}, {"type": "nonlin", "func": "tanh"}, {"type": "fc", "n": 100}, {"type": "nonlin", "func": "tanh"}]'
@@ -106,7 +106,6 @@ def main():
         log.write(iter_info, print_header=i % 20 == 0)
         if args.save_freq != 0 and i % args.save_freq == 0 and args.log is not None:
             log.write_snapshot(policy, i)
-            print(f'iter: {i}')
 
 
 if __name__ == '__main__':

@@ -7,7 +7,7 @@ import numpy as np
 import os
 import os.path
 import tables, warnings; warnings.filterwarnings('ignore', category=tables.NaturalNameWarning)
-from gail_theano.policyopt import util
+from . import util
 
 import theano
 from theano import tensor
@@ -438,7 +438,6 @@ class Standardizer(Model):
     def varscope(self): return self.__varscope
 
     def update(self, points_N_D):
-        # print('updating')
         assert points_N_D.ndim == 2 and points_N_D.shape[1] == self._dim
         num = points_N_D.shape[0]
         count = float(self._count.get_value())
@@ -448,7 +447,6 @@ class Standardizer(Model):
         self._count.set_value(count + num)
 
     def standardize_expr(self, x_B_D):
-        # print('nn standardize_expr called')
         return (x_B_D - self._mean_1_D) / (self._stdev_1_D + self._eps)
 
     def unstandardize_expr(self, y_B_D):
