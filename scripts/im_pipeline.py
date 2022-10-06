@@ -5,7 +5,7 @@ import numpy as np
 import yaml
 import os, os.path, shutil
 from policyopt import util
-
+from proto_def.proto_logger import ProtoLogger
 
 
 # PBS

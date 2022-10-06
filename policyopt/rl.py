@@ -1,7 +1,7 @@
-from gail_theano.policyopt import nn, util, thutil, optim, ContinuousSpace, FiniteSpace, RaggedArray
+from . import nn, util, thutil, optim, ContinuousSpace, FiniteSpace, RaggedArray
 from collections import namedtuple
 from contextlib import contextmanager
-from gail_theano import environments
+import environments
 import numpy as np
 
 import theano
