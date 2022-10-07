@@ -22,14 +22,15 @@ def load_dataset(filename, limit_trajs, data_subsamp_freq):
     #     exa_B_T_Da = f['a_B_T_Da'][:dset_size,...][...]
     #     exr_B_T = f['r_B_T'][:dset_size,...][...]
     #     exlen_B = f['len_B'][:dset_size,...][...]
-    import pickle
-    with open('ddpg/ddpg_expert.pkl', 'rb') as fp:
-        data = pickle.load(fp)
-    
+
+    # import pickle
+    # with open('ddpg/ddpg_expert.pkl', 'rb') as fp:
+    #     data = pickle.load(fp)
     # exobs_B_T_Do = data['observations']
     # exa_B_T_Da = data['actions']
     # exr_B_T = data['rewards']
     # exlen_B = data['lengths']
+
     from proto_tools import proto_logger
     exobs_B_T_Do, exa_B_T_Da, exr_B_T, exlen_B = proto_logger.extract_samples_from_expert('/root/irl_control_container/libraries/gail/imitation_runs/classic1/trajs/trajs_mountaincar_continuous.proto')
     dset_size = exobs_B_T_Do.shape[0]
