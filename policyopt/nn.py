@@ -340,7 +340,8 @@ class TrainingLog(object):
             self.f = None
         else:
             if os.path.exists(filename):
-                raise RuntimeError('Log file %s already exists' % filename)
+                # raise RuntimeError('Log file %s already exists' % filename)
+                print('Log file %s already exists' % filename)
             self.f = tables.open_file(filename, mode='w')
             for k, v in attrs: self.f.root._v_attrs[k] = v
             self.log_table = None
