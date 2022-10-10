@@ -1,0 +1,11 @@
+gym==0.25.1
+Theano~=1.0.5
+numpy<=1.22
+tables>=3.4.4
+opencv-python
+pandas
+PyYAML
+scipy
+ipython
+matplotlib
+h5py
