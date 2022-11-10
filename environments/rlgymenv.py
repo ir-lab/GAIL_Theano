@@ -6,7 +6,14 @@ from gym import spaces, envs
 
 # gym.undo_logger_setup()
 import logging; logging.getLogger('gym.core').addHandler(logging.NullHandler())
+import gym
+from gym.envs.registration import register
 
+register(
+     id='bimanual',
+     entry_point='learning.dual_insertion:DualInsertion',
+     max_episode_steps=20000,
+)
 
 class RLGymSim(policyopt.Simulation):
     def __init__(self, env_name):
