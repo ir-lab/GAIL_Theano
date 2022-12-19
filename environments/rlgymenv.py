@@ -9,10 +9,22 @@ import logging; logging.getLogger('gym.core').addHandler(logging.NullHandler())
 import gym
 from gym.envs.registration import register
 
+# register(
+#      id='bimanual',
+#      entry_point='learning.dual_insertion:DualInsertion',
+#      max_episode_steps=20000,
+# )
+
 register(
-     id='bimanual',
-     entry_point='learning.dual_insertion:DualInsertion',
-     max_episode_steps=20000,
+     id='bimanual_test_xyz',
+     entry_point='learning.gym_bimanual_test_xyz:GymBimanualTestXYZ',
+     max_episode_steps=3000,
+)
+
+register(
+     id='bimanual_test_force',
+     entry_point='learning.gym_bimanual_test_force:GymBimanualTestForce',
+     max_episode_steps=3000,
 )
 
 class RLGymSim(policyopt.Simulation):
@@ -36,6 +48,11 @@ class RLGymSim(policyopt.Simulation):
         self.curr_obs, reward, terminated, truncated = self.env.step(action)
         self.is_done = terminated
         return reward
+
+    # def close_window(self):
+    #     if self.env.render_scene:
+    #         import glfw; glfw.destroy_window(self.env.viewer.window)
+
 
     @property
     def obs(self):
