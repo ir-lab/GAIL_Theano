@@ -27,6 +27,14 @@ register(
      max_episode_steps=3000,
 )
 
+register(
+     id='path_demo',
+     entry_point='path_demo.gym_path_demo:GymPathDemo',
+     max_episode_steps=999,
+     reward_threshold = 80.0
+)
+
+
 class RLGymSim(policyopt.Simulation):
     def __init__(self, env_name):
         self.env = envs.make(env_name)
