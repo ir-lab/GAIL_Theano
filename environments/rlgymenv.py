@@ -29,7 +29,7 @@ register(
 
 register(
      id='path_demo',
-     entry_point='path_demo.gym_path_demo:GymPathDemo',
+     entry_point='imitation.environments.path_demo.gym_path_demo:GymPathDemo',
      max_episode_steps=300,
      reward_threshold = 75.0
 )
