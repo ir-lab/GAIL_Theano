@@ -16,20 +16,20 @@ from gym.envs.registration import register
 # )
 
 register(
-     id='bimanual_test_xyz',
-     entry_point='learning.gym_bimanual_test_xyz:GymBimanualTestXYZ',
+     id='bimanual_reach_v1',
+     entry_point='imitation.environments.bimanual_reach_v1.bimanual_reach_v1:BimanualReachV1',
      max_episode_steps=3000,
 )
 
 register(
-     id='bimanual_test_force',
-     entry_point='learning.gym_bimanual_test_force:GymBimanualTestForce',
+     id='bimanual_reach_v2',
+     entry_point='imitation.environments.bimanual_reach_v2.bimanual_reach_v2:BimanualReachV2',
      max_episode_steps=3000,
 )
 
 register(
-     id='path_demo',
-     entry_point='imitation.environments.path_demo.gym_path_demo:GymPathDemo',
+     id='path_follow_v1',
+     entry_point='imitation.environments.path_follow_v1.path_follow_v1:PathFollowV1',
      max_episode_steps=300,
      reward_threshold = 75.0
 )
