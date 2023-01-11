@@ -34,6 +34,13 @@ register(
      reward_threshold = 75.0
 )
 
+register(
+     id='path_follow_v2',
+     entry_point='imitation.environments.path_follow_v2.path_follow_v2:PathFollowV2',
+     max_episode_steps=300,
+    #  reward_threshold = 75.0
+)
+
 
 class RLGymSim(policyopt.Simulation):
     def __init__(self, env_name):
