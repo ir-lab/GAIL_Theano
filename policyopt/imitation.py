@@ -13,7 +13,7 @@ import copy
 class DAggerOptimizer(object):
     def __init__(self, mdp, policy, lr, sim_cfg, policy_obsfeat_fn, reward_obsfeat_fn, ex_obs, ex_a, ex_t, enable_obsnorm, policy_hidden_spec, num_epochs=30, minibatch_size=64):
         self.mdp, self.policy, self.lr, self.sim_cfg, self.policy_obsfeat_fn, self.reward_obsfeat_fn = mdp, policy, lr, sim_cfg, policy_obsfeat_fn, reward_obsfeat_fn
-        self.x_obs, self.ex_a, self.ex_t = ex_obs, ex_a, ex_t
+        self.ex_obs, self.ex_a, self.ex_t = ex_obs, ex_a, ex_t
         self.enable_obsnorm = enable_obsnorm
         self.policy_hidden_spec = policy_hidden_spec
         self.num_epochs = num_epochs
@@ -23,6 +23,10 @@ class DAggerOptimizer(object):
         self.total_num_sa = 0
         self.total_time = 0.   
         self.curr_iter = 0
+        
+        for _epoch in range(self.num_epochs):
+            self.step_bclone_minibatch(self.ex_obs, self.ex_a, self.lr, minibatch_size=self.minibatch_size)
+        
         self.initial_weights = copy.deepcopy(self.policy.get_params())
         
         root_path = Path(os.environ.get('HOME')) / 'irl_control_container/libraries/algorithms/dagger/DAgger'

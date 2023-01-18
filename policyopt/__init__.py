@@ -274,7 +274,12 @@ class MDP(object):
                 expert_a, novice_a = policy_fn(obsfeat[-1], sim.env)
                 actions.append(expert_a)
                 actiondists.append([[-1, -1]])
-                rewards.append(sim.step(novice_a[0,:]))
+                beta = np.random.uniform(low=0.0, high=1.0)
+                if beta < 0.7:
+                    action = novice_a[0,:]
+                else:
+                    action = expert_a[0,:]
+                rewards.append(sim.step(action))
                 if sim.done: break
         obs_T_Do = np.concatenate(obs); assert obs_T_Do.shape == (len(obs), self.obs_space.storage_size)
         obsfeat_T_Df = np.concatenate(obsfeat); assert obsfeat_T_Df.shape[0] == len(obs)
