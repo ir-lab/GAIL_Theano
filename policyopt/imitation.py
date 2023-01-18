@@ -11,11 +11,13 @@ from pathlib import Path
 import copy
 
 class DAggerOptimizer(object):
-    def __init__(self, mdp, policy, lr, sim_cfg, policy_obsfeat_fn, reward_obsfeat_fn, ex_obs, ex_a, ex_t, enable_obsnorm, policy_hidden_spec):
+    def __init__(self, mdp, policy, lr, sim_cfg, policy_obsfeat_fn, reward_obsfeat_fn, ex_obs, ex_a, ex_t, enable_obsnorm, policy_hidden_spec, num_epochs=30, minibatch_size=64):
         self.mdp, self.policy, self.lr, self.sim_cfg, self.policy_obsfeat_fn, self.reward_obsfeat_fn = mdp, policy, lr, sim_cfg, policy_obsfeat_fn, reward_obsfeat_fn
         self.x_obs, self.ex_a, self.ex_t = ex_obs, ex_a, ex_t
         self.enable_obsnorm = enable_obsnorm
         self.policy_hidden_spec = policy_hidden_spec
+        self.num_epochs = num_epochs
+        self.minibatch_size = minibatch_size
         self.all_trajs = []
         self.total_num_trajs = 0
         self.total_num_sa = 0
@@ -44,9 +46,28 @@ class DAggerOptimizer(object):
         
         predicted_action, _ = self.policy.sample_actions(obsfeat_B_Df, deterministic=True)
         return expert_action, predicted_action
+
+    
+    def step_bclone_minibatch(self, obs_data, act_data, lr, minibatch_size=64):
+        """
+        Perform minibatch updates for the policy
+        Args:
+            obs_data (np.ndarray): observations for the entire dataset
+            act_data (np.ndarray): actions for the entire dataset
+            lr (float): learning rate for the updates
+            minibatch_size (int): size of the minibatch to use for updates
+        """
+        num_data = obs_data.shape[0]
+        num_minibatches = int(num_data / minibatch_size)
+        for i in range(num_minibatches):
+            start_idx = i * minibatch_size
+            end_idx = (i + 1) * minibatch_size
+            obs_minibatch = obs_data[start_idx:end_idx]
+            act_minibatch = act_data[start_idx:end_idx]
+            self.policy.step_bclone(obs_minibatch, act_minibatch, lr)
+    
     
     def step(self):
-        loss_arr = []
         with util.Timer() as t_all:
             with util.Timer() as t_sample:
                 sampbatch: TrajBatch = self.mdp.sim_mp(
@@ -64,9 +85,8 @@ class DAggerOptimizer(object):
             
             # Do policy updates here
             self.reset_policy()
-            for i in range(30):
-                loss = self.policy.step_bclone(obs_data, act_data, self.lr)
-                loss_arr.append(loss)
+            for _epoch in range(self.num_epochs):
+                loss = self.step_bclone_minibatch(obs_data, act_data, self.lr, minibatch_size=self.minibatch_size)
             
         self.total_num_trajs += len(sampbatch)
         self.total_num_sa += sum(len(traj) for traj in sampbatch)
@@ -87,8 +107,8 @@ class DAggerOptimizer(object):
             # ('tadv', t_adv.dt + t_vf_fit.dt, float), # time for advantage computation
             # ('tstep', t_step.dt, float), # time for step computation
             ('ttotal', self.total_time, float), # total time
-            ('loss', loss_arr[-1], float)
-        ]
+            ('loss', loss, float)
+        ] 
 
         self.curr_iter += 1
         return fields
