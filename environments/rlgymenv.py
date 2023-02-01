@@ -7,39 +7,6 @@ from gym import spaces, envs
 # gym.undo_logger_setup()
 import logging; logging.getLogger('gym.core').addHandler(logging.NullHandler())
 import gym
-from gym.envs.registration import register
-
-# register(
-#      id='bimanual',
-#      entry_point='learning.dual_insertion:DualInsertion',
-#      max_episode_steps=20000,
-# )
-
-register(
-     id='bimanual_reach_v1',
-     entry_point='imitation.environments.bimanual_reach_v1.bimanual_reach_v1:BimanualReachV1',
-     max_episode_steps=3000,
-)
-
-register(
-     id='bimanual_reach_v2',
-     entry_point='imitation.environments.bimanual_reach_v2.bimanual_reach_v2:BimanualReachV2',
-     max_episode_steps=3000,
-)
-
-register(
-     id='path_follow_v1',
-     entry_point='imitation.environments.path_follow_v1.path_follow_v1:PathFollowV1',
-     max_episode_steps=300,
-     reward_threshold = 75.0
-)
-
-register(
-     id='path_follow_v2',
-     entry_point='imitation.environments.path_follow_v2.path_follow_v2:PathFollowV2',
-     max_episode_steps=300,
-    #  reward_threshold = 75.0
-)
 
 
 class RLGymSim(policyopt.Simulation):
