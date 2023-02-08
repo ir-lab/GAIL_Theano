@@ -254,7 +254,7 @@ class MDP(object):
     def new_batched_sim(self, batch_size):
         return SequentialBatchedSim(self, batch_size)
 
-    def sim_single(self, policy_fn, obsfeat_fn, max_traj_len, init_state=None, alg_name=None):
+    def sim_single(self, policy_fn, obsfeat_fn, max_traj_len, init_state=None, alg_name=None, record_gif=False):
         '''Simulate a single trajectory'''
         sim = self.new_sim(init_state=init_state)
         obs, obsfeat, actions, actiondists, rewards = [], [], [], [], []
@@ -281,6 +281,10 @@ class MDP(object):
                     action = expert_a[0,:]
                 rewards.append(sim.step(action))
                 if sim.done: break
+        
+        if record_gif:
+            sim.env.export_gif(self.env_name)
+        
         obs_T_Do = np.concatenate(obs); assert obs_T_Do.shape == (len(obs), self.obs_space.storage_size)
         obsfeat_T_Df = np.concatenate(obsfeat); assert obsfeat_T_Df.shape[0] == len(obs)
         adist_T_Pa = np.concatenate(actiondists); assert adist_T_Pa.ndim == 2 and adist_T_Pa.shape[0] == len(obs)
@@ -360,19 +364,19 @@ class MDP(object):
         assert len(completed_trajs) >= cfg.min_num_trajs and sum(len(traj) for traj in completed_trajs) >= cfg.min_total_sa
         return TrajBatch.FromTrajs(completed_trajs)
 
-    def sim_mp(self, policy_fn, obsfeat_fn, cfg, maxtasksperchild=200, alg_name=None):
+    def sim_mp(self, policy_fn, obsfeat_fn, cfg, maxtasksperchild=200, alg_name=None, record_gif=False):
         '''
         Multiprocessed simulation
         Not thread safe! But why would you want this to be thread safe anyway?
         '''
-        num_processes = cfg.batch_size if cfg.batch_size is not None else multiprocessing.cpu_count()//2
+        num_processes = 1 # cfg.batch_size if cfg.batch_size is not None else multiprocessing.cpu_count()//2
 
         # Bypass multiprocessing if only using one process
         if num_processes == 1:
             trajs = []
             num_sa = 0
             while True:
-                t = self.sim_single(policy_fn, obsfeat_fn, cfg.max_traj_len, alg_name=alg_name)
+                t = self.sim_single(policy_fn, obsfeat_fn, cfg.max_traj_len, alg_name=alg_name, record_gif=record_gif)
                 trajs.append(t)
                 num_sa += len(t)
                 if len(trajs) >= cfg.min_num_trajs and num_sa >= cfg.min_total_sa:
@@ -408,9 +412,10 @@ class MDP(object):
                         break
                 sleep(.001)
             pool.close()
+            pool.join()
 
-        assert len(trajs) >= cfg.min_num_trajs and sum(len(traj) for traj in trajs) >= cfg.min_total_sa
-        return TrajBatch.FromTrajs(trajs)
+            assert len(trajs) >= cfg.min_num_trajs and sum(len(traj) for traj in trajs) >= cfg.min_total_sa
+            return TrajBatch.FromTrajs(trajs)
 
 _global_sim_info = None
 def _rollout():
@@ -438,8 +443,9 @@ from contextlib import contextmanager
 @contextmanager
 def set_mkl_threads(n):
     if mkl_rt is not None:
-        orig = mkl_get_max_threads()
+        # orig = mkl_get_max_threads()
         mkl_set_num_threads(n)
     yield
-    if mkl_rt is not None:
-        mkl_set_num_threads(orig)
+    # NOTE: Setting num_threads to `orig` doesn't work for SLURM, so just set num threads to 1 every time
+    # if mkl_rt is not None:
+    #     mkl_set_num_threads(orig)
