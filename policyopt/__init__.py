@@ -369,7 +369,7 @@ class MDP(object):
         Multiprocessed simulation
         Not thread safe! But why would you want this to be thread safe anyway?
         '''
-        num_processes = 1 # cfg.batch_size if cfg.batch_size is not None else multiprocessing.cpu_count()//2
+        num_processes = cfg.batch_size if cfg.batch_size is not None else multiprocessing.cpu_count()//2
 
         # Bypass multiprocessing if only using one process
         if num_processes == 1:
