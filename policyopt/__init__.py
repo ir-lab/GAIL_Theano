@@ -254,9 +254,13 @@ class MDP(object):
     def new_batched_sim(self, batch_size):
         return SequentialBatchedSim(self, batch_size)
 
-    def sim_single(self, policy_fn, obsfeat_fn, max_traj_len, init_state=None, alg_name=None, record_gif=False):
+    def sim_single(self, policy_fn, obsfeat_fn, max_traj_len, init_state=None, alg_name=None, record_gif=False, gif_export_dir=None, gif_prefix=None, gif_export_suffix=None):
         '''Simulate a single trajectory'''
         sim = self.new_sim(init_state=init_state)
+        
+        if record_gif:
+            sim.env.unwrapped.set_gif_recording(gif_export_dir, gif_prefix, gif_export_suffix)
+        
         obs, obsfeat, actions, actiondists, rewards = [], [], [], [], []
         if alg_name == None:
             for _ in range(max_traj_len):
@@ -283,7 +287,7 @@ class MDP(object):
                 if sim.done: break
         
         if record_gif:
-            sim.env.export_gif(self.env_name)
+            sim.env.unwrapped.export_gif_recording()
         
         obs_T_Do = np.concatenate(obs); assert obs_T_Do.shape == (len(obs), self.obs_space.storage_size)
         obsfeat_T_Df = np.concatenate(obsfeat); assert obsfeat_T_Df.shape[0] == len(obs)
@@ -364,7 +368,13 @@ class MDP(object):
         assert len(completed_trajs) >= cfg.min_num_trajs and sum(len(traj) for traj in completed_trajs) >= cfg.min_total_sa
         return TrajBatch.FromTrajs(completed_trajs)
 
-    def sim_mp(self, policy_fn, obsfeat_fn, cfg, maxtasksperchild=200, alg_name=None, record_gif=False):
+    def sim_mkl(self):
+        with set_mkl_threads(1):
+            pool = multiprocessing.Pool(processes=2, maxtasksperchild=200)
+            pool.close()
+            pool.join()
+
+    def sim_mp(self, policy_fn, obsfeat_fn, cfg, maxtasksperchild=200, alg_name=None, record_gif=False, gif_export_dir=None, gif_prefix=None, gif_export_suffix=None):
         '''
         Multiprocessed simulation
         Not thread safe! But why would you want this to be thread safe anyway?
@@ -376,7 +386,7 @@ class MDP(object):
             trajs = []
             num_sa = 0
             while True:
-                t = self.sim_single(policy_fn, obsfeat_fn, cfg.max_traj_len, alg_name=alg_name, record_gif=record_gif)
+                t = self.sim_single(policy_fn, obsfeat_fn, cfg.max_traj_len, alg_name=alg_name, record_gif=record_gif, gif_export_dir=gif_export_dir, gif_prefix=gif_prefix, gif_export_suffix=gif_export_suffix)
                 trajs.append(t)
                 num_sa += len(t)
                 if len(trajs) >= cfg.min_num_trajs and num_sa >= cfg.min_total_sa:
@@ -384,7 +394,7 @@ class MDP(object):
             return TrajBatch.FromTrajs(trajs)
 
         global _global_sim_info
-        _global_sim_info = (self, policy_fn, obsfeat_fn, cfg.max_traj_len)
+        _global_sim_info = (self, policy_fn, obsfeat_fn, cfg.max_traj_len, alg_name)
 
         trajs = []
         num_sa = 0
@@ -396,7 +406,7 @@ class MDP(object):
             done = False
             while True:
                 if len(pending) < num_processes and not done:
-                    pending.append(pool.apply_async(_rollout))
+                    pending.append(pool.apply_async(_rollout, args=(record_gif, gif_export_dir, gif_prefix, gif_export_suffix,)))
                 stillpending = []
                 for job in pending:
                     if job.ready():
@@ -418,14 +428,16 @@ class MDP(object):
             return TrajBatch.FromTrajs(trajs)
 
 _global_sim_info = None
-def _rollout():
+def _rollout(record_gif, gif_export_dir, gif_prefix, gif_export_suffix):
     try:
         import os, random; random.seed(os.urandom(4)); 
         # np.random.seed(int(os.urandom(4).encode('hex'), 16))
         np.random.seed(int(binascii.hexlify(os.urandom(4)), 16))
         global _global_sim_info
-        mdp, policy_fn, obsfeat_fn, max_traj_len = _global_sim_info
-        return mdp.sim_single(policy_fn, obsfeat_fn, max_traj_len)
+        mdp, policy_fn, obsfeat_fn, max_traj_len, alg_name = _global_sim_info
+        # from threadpoolctl import threadpool_limits
+        # with threadpool_limits(limits=1, user_api='blas'):
+        return mdp.sim_single(policy_fn, obsfeat_fn, max_traj_len, alg_name=alg_name, record_gif=record_gif, gif_export_dir=gif_export_dir, gif_prefix=gif_prefix, gif_export_suffix=gif_export_suffix)
     except KeyboardInterrupt:
         pass
 

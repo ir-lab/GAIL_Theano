@@ -24,29 +24,33 @@ class DAggerOptimizer(object):
         self.total_time = 0.   
         self.curr_iter = 0
         
+        self.mdp.sim_mkl()
+        print('Initializing BC weights')
         for _epoch in range(self.num_epochs):
             self.step_bclone_minibatch(self.ex_obs, self.ex_a, self.lr, minibatch_size=self.minibatch_size)
-        
-        self.initial_weights = copy.deepcopy(self.policy.get_params())
-        
-        root_path = Path(os.environ.get('HOME')) / 'irl_control_container/libraries/algorithms/dagger/DAgger'
-        if mdp.env_name == 'MountainCarContinuous-v0':
-            json_file = open(root_path / 'Actor_model_architecture.json', 'r')
-            loaded_model_json = json_file.read()
-            json_file.close()
-            self.mc_policy_fn = model_from_json(loaded_model_json)
-            self.mc_policy_fn.load_weights(root_path / "DDPG_actor_model_750.h5")    
+            if _epoch % 10 == 0:
+                print(f'Epoch {_epoch} ...')
+        print('Initialized BC weights!')
+        self.initial_weights = np.array(self.policy.get_params(), copy=True)
+            
+        # root_path = Path(os.environ.get('HOME')) / 'irl_control_container/libraries/algorithms/dagger/DAgger'
+        # if mdp.env_name == 'MountainCarContinuous-v0':
+        #     json_file = open(root_path / 'Actor_model_architecture.json', 'r')
+        #     loaded_model_json = json_file.read()
+        #     json_file.close()
+        #     self.mc_policy_fn = model_from_json(loaded_model_json)
+        #     self.mc_policy_fn.load_weights(root_path / "DDPG_actor_model_750.h5")    
     
     def reset_policy(self):
         self.policy.set_params(self.initial_weights)
 
     def policy_fn(self, obsfeat_B_Df, env):
-        if self.mdp.env_name.startswith('path_follow'):
-            expert_action = env.dagger_expert_policy_fn()
-            expert_action = np.array(expert_action, dtype=theano.config.floatX).reshape(1,-1)
-        elif self.mdp.env_name == 'MountainCarContinuous-v0':
-            expert_action = self.mc_policy_fn.predict(obsfeat_B_Df)
-            expert_action = np.array(expert_action, dtype=theano.config.floatX).reshape(1,-1)
+        # if self.mdp.env_name.startswith('path_follow'):
+        expert_action = env.dagger_expert_policy_fn()
+        expert_action = np.array(expert_action, dtype=theano.config.floatX).reshape(1,-1)
+        # elif self.mdp.env_name == 'MountainCarContinuous-v0':
+        #     expert_action = self.mc_policy_fn.predict(obsfeat_B_Df)
+        #     expert_action = np.array(expert_action, dtype=theano.config.floatX).reshape(1,-1)
         
         predicted_action, _ = self.policy.sample_actions(obsfeat_B_Df, deterministic=True)
         return expert_action, predicted_action
@@ -70,7 +74,6 @@ class DAggerOptimizer(object):
             act_minibatch = act_data[start_idx:end_idx]
             self.policy.step_bclone(obs_minibatch, act_minibatch, lr)
     
-    
     def step(self):
         with util.Timer() as t_all:
             with util.Timer() as t_sample:
@@ -79,14 +82,12 @@ class DAggerOptimizer(object):
                     obsfeat_fn=self.policy_obsfeat_fn,
                     cfg=self.sim_cfg,
                     alg_name='dagger')
-        
 
             self.all_trajs += sampbatch.trajs
             all_traj_batch = TrajBatch.FromTrajs(self.all_trajs)
             
             obs_data = all_traj_batch.obs.stacked
             act_data = all_traj_batch.a.stacked
-            
             # Do policy updates here
             self.reset_policy()
             for _epoch in range(self.num_epochs):
@@ -111,7 +112,7 @@ class DAggerOptimizer(object):
             # ('tadv', t_adv.dt + t_vf_fit.dt, float), # time for advantage computation
             # ('tstep', t_step.dt, float), # time for step computation
             ('ttotal', self.total_time, float), # total time
-            ('loss', loss, float)
+            # ('loss', loss, float)
         ] 
 
         self.curr_iter += 1
@@ -635,19 +636,19 @@ class ImitationOptimizer(object):
             ('avglen', int(np.mean([len(traj) for traj in sampbatch])), int), # average traj length
             ('ntrajs', self.total_num_trajs, int), # total number of trajs sampled over the course of training
             ('nsa', self.total_num_sa, int), # total number of state-action pairs sampled over the course of training
-            ('ent', self.policy._compute_actiondist_entropy(sampbatch.adist.stacked).mean(), float), # entropy of action distributions
-            ('vf_r2', vfunc_r2, float),
-            ('tdvf_r2', simplev_r2, float),
-            ('dx', util.maxnorm(params0_P - self.policy.get_params()), float), # max parameter difference from last iteration
-        ] + step_print + vfit_print + rfit_print + [
-            ('avgr', rcurr_stacked.mean(), float), # average regularized reward encountered
-            ('avgunregr', orig_rcurr_stacked.mean(), float), # average unregularized reward
-            ('avgpreg', policyentbonus_B.mean(), float), # average policy regularization
+            # ('ent', self.policy._compute_actiondist_entropy(sampbatch.adist.stacked).mean(), float), # entropy of action distributions
+            # ('vf_r2', vfunc_r2, float),
+            # ('tdvf_r2', simplev_r2, float),
+            # ('dx', util.maxnorm(params0_P - self.policy.get_params()), float), # max parameter difference from last iteration
+            # ] + step_print + vfit_print + rfit_print + [
+            # ('avgr', rcurr_stacked.mean(), float), # average regularized reward encountered
+            # ('avgunregr', orig_rcurr_stacked.mean(), float), # average unregularized reward
+            # ('avgpreg', policyentbonus_B.mean(), float), # average policy regularization
             # ('bcloss', -self.policy.compute_action_logprobs(exbatch_pobsfeat, exbatch_a).mean(), float), # negative log likelihood of expert actions
             # ('bcloss', np.square(self.policy.compute_actiondist_mean(exbatch_pobsfeat) - exbatch_a).sum(axis=1).mean(axis=0), float),
-            ('tsamp', t_sample.dt, float), # time for sampling
-            ('tadv', t_adv.dt + t_vf_fit.dt, float), # time for advantage computation
-            ('tstep', t_step.dt, float), # time for step computation
+            # ('tsamp', t_sample.dt, float), # time for sampling
+            # ('tadv', t_adv.dt + t_vf_fit.dt, float), # time for advantage computation
+            # ('tstep', t_step.dt, float), # time for step computation
             ('ttotal', self.total_time, float), # total time
         ]
         self.curr_iter += 1
