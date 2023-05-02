@@ -380,13 +380,29 @@ class MDP(object):
         Not thread safe! But why would you want this to be thread safe anyway?
         '''
         num_processes = cfg.batch_size if cfg.batch_size is not None else multiprocessing.cpu_count()//2
+        
+        if record_gif and gif_export_suffix is None:
+            self.gif_suffix = 0
+            from threading import Lock
+            self.gif_suffix_mutex = Lock()
+        
+        def get_next_gif_suffix():
+            self.gif_suffix_mutex.acquire()
+            suffix = '{:03d}'.format(self.gif_suffix)
+            self.gif_suffix += 1
+            self.gif_suffix_mutex.release()
+            return suffix
 
         # Bypass multiprocessing if only using one process
         if num_processes == 1:
             trajs = []
             num_sa = 0
             while True:
-                t = self.sim_single(policy_fn, obsfeat_fn, cfg.max_traj_len, alg_name=alg_name, record_gif=record_gif, gif_export_dir=gif_export_dir, gif_prefix=gif_prefix, gif_export_suffix=gif_export_suffix)
+                if record_gif and gif_export_suffix is None:
+                    suffix = get_next_gif_suffix()
+                else:
+                    suffix = gif_export_suffix
+                t = self.sim_single(policy_fn, obsfeat_fn, cfg.max_traj_len, alg_name=alg_name, record_gif=record_gif, gif_export_dir=gif_export_dir, gif_prefix=gif_prefix, gif_export_suffix=suffix)
                 trajs.append(t)
                 num_sa += len(t)
                 if len(trajs) >= cfg.min_num_trajs and num_sa >= cfg.min_total_sa:
@@ -406,7 +422,11 @@ class MDP(object):
             done = False
             while True:
                 if len(pending) < num_processes and not done:
-                    pending.append(pool.apply_async(_rollout, args=(record_gif, gif_export_dir, gif_prefix, gif_export_suffix,)))
+                    if record_gif and gif_export_suffix is None:
+                        suffix = get_next_gif_suffix()
+                    else:
+                        suffix = gif_export_suffix
+                    pending.append(pool.apply_async(_rollout, args=(record_gif, gif_export_dir, gif_prefix, suffix,)))
                 stillpending = []
                 for job in pending:
                     if job.ready():
