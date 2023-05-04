@@ -135,7 +135,7 @@ class DAggerOptimizer(object):
             # ('tadv', t_adv.dt + t_vf_fit.dt, float), # time for advantage computation
             # ('tstep', t_step.dt, float), # time for step computation
             ('ttotal', self.total_time, float), # total time
-            ('beta', action_beta)
+            ('beta', action_beta, float)
             # ('loss', loss, float)
         ] 
 
