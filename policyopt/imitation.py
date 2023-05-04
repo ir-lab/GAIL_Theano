@@ -9,15 +9,25 @@ import os
 from keras.models import model_from_json
 from pathlib import Path
 import copy
+from enum import Enum
+
+class DaggerActionBetaDecay(Enum):
+    NO_DECAY = 'no_decay'
+    SIMPLE = 'simple'
+
 
 class DAggerOptimizer(object):
-    def __init__(self, mdp, policy, lr, sim_cfg, policy_obsfeat_fn, reward_obsfeat_fn, ex_obs, ex_a, ex_t, enable_obsnorm, policy_hidden_spec, num_epochs=30, minibatch_size=64):
+    def __init__(self, mdp, policy, lr, sim_cfg, policy_obsfeat_fn, reward_obsfeat_fn, ex_obs, ex_a, ex_t, enable_obsnorm, policy_hidden_spec, 
+                 num_epochs=30, minibatch_size=64, action_beta=0.7, action_beta_decay=DaggerActionBetaDecay.NO_DECAY, simple_decay_constant=5):
         self.mdp, self.policy, self.lr, self.sim_cfg, self.policy_obsfeat_fn, self.reward_obsfeat_fn = mdp, policy, lr, sim_cfg, policy_obsfeat_fn, reward_obsfeat_fn
         self.ex_obs, self.ex_a, self.ex_t = ex_obs, ex_a, ex_t
         self.enable_obsnorm = enable_obsnorm
         self.policy_hidden_spec = policy_hidden_spec
         self.num_epochs = num_epochs
         self.minibatch_size = minibatch_size
+        self.action_beta = action_beta
+        self.action_beta_decay = action_beta_decay
+        self.simple_decay_constant = simple_decay_constant
         self.all_trajs = []
         self.total_num_trajs = 0
         self.total_num_sa = 0
@@ -25,6 +35,12 @@ class DAggerOptimizer(object):
         self.curr_iter = 0
         
         self.mdp.sim_mkl()
+        if self.action_beta_decay == DaggerActionBetaDecay.SIMPLE:
+            assert self.simple_decay_constant >= 0
+            print(f'DAgger Optimizer: Using simple decay constant {self.simple_decay_constant}')
+        elif self.action_beta_decay == DaggerActionBetaDecay.NO_DECAY:
+            print(f'DAgger Optimizer: Using action beta {self.action_beta}')
+        
         print('Initializing BC weights')
         for _epoch in range(self.num_epochs):
             self.step_bclone_minibatch(self.ex_obs, self.ex_a, self.lr, minibatch_size=self.minibatch_size)
@@ -77,11 +93,18 @@ class DAggerOptimizer(object):
     def step(self):
         with util.Timer() as t_all:
             with util.Timer() as t_sample:
+                if self.action_beta_decay == DaggerActionBetaDecay.NO_DECAY:
+                    action_beta = self.action_beta
+                elif self.action_beta_decay == DaggerActionBetaDecay.SIMPLE:
+                    x = self.curr_iter
+                    action_beta = x/(x + self.simple_decay_constant)
+                
                 sampbatch: TrajBatch = self.mdp.sim_mp(
                     policy_fn=lambda obsfeat_B_Df, env: self.policy_fn(obsfeat_B_Df, env),
                     obsfeat_fn=self.policy_obsfeat_fn,
                     cfg=self.sim_cfg,
-                    alg_name='dagger')
+                    alg_name='dagger',
+                    dagger_action_beta=action_beta)
 
             self.all_trajs += sampbatch.trajs
             all_traj_batch = TrajBatch.FromTrajs(self.all_trajs)
@@ -112,6 +135,7 @@ class DAggerOptimizer(object):
             # ('tadv', t_adv.dt + t_vf_fit.dt, float), # time for advantage computation
             # ('tstep', t_step.dt, float), # time for step computation
             ('ttotal', self.total_time, float), # total time
+            ('beta', action_beta)
             # ('loss', loss, float)
         ] 
 

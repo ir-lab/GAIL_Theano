@@ -254,8 +254,14 @@ class MDP(object):
     def new_batched_sim(self, batch_size):
         return SequentialBatchedSim(self, batch_size)
 
-    def sim_single(self, policy_fn, obsfeat_fn, max_traj_len, init_state=None, alg_name=None, record_gif=False, gif_export_dir=None, gif_prefix=None, gif_export_suffix=None):
+    def sim_single(self, policy_fn, obsfeat_fn, max_traj_len, init_state=None, alg_name=None, dagger_action_beta=0.7,
+                   record_gif=False, gif_export_dir=None, gif_prefix=None, gif_export_suffix=None, 
+                   dagger_eval=False):
         '''Simulate a single trajectory'''
+        
+        if dagger_eval:
+            assert alg_name == 'dagger'
+        
         sim = self.new_sim(init_state=init_state)
         
         if record_gif:
@@ -275,15 +281,22 @@ class MDP(object):
             for _ in range(max_traj_len):
                 obs.append(sim.obs[None,...].copy())
                 obsfeat.append(obsfeat_fn(obs[-1]))
-                expert_a, novice_a = policy_fn(obsfeat[-1], sim.env)
-                actions.append(expert_a)
-                actiondists.append([[-1, -1]])
-                beta = np.random.uniform(low=0.0, high=1.0)
-                if beta < 0.7:
-                    action = novice_a[0,:]
+                if dagger_eval:
+                    expert_a, novice_a = policy_fn(obsfeat[-1], sim.env)
+                    actions.append(novice_a)
+                    actiondists.append([[-1, -1]])
+                    rewards.append(sim.step(novice_a[0,:]))
                 else:
-                    action = expert_a[0,:]
-                rewards.append(sim.step(action))
+                    expert_a, novice_a = policy_fn(obsfeat[-1], sim.env)
+                    actions.append(expert_a)
+                    actiondists.append([[-1, -1]])
+                    beta = np.random.uniform(low=0.0, high=1.0)
+                    if beta < dagger_action_beta:
+                        action = novice_a[0,:]
+                    else:
+                        action = expert_a[0,:]
+                    rewards.append(sim.step(action))
+                
                 if sim.done: break
         
         if record_gif:
@@ -374,7 +387,9 @@ class MDP(object):
             pool.close()
             pool.join()
 
-    def sim_mp(self, policy_fn, obsfeat_fn, cfg, maxtasksperchild=200, alg_name=None, record_gif=False, gif_export_dir=None, gif_prefix=None, gif_export_suffix=None):
+    def sim_mp(self, policy_fn, obsfeat_fn, cfg, maxtasksperchild=200, alg_name=None, dagger_action_beta=0.7,
+               record_gif=False, gif_export_dir=None, gif_prefix=None, gif_export_suffix=None, 
+               dagger_eval=False):
         '''
         Multiprocessed simulation
         Not thread safe! But why would you want this to be thread safe anyway?
@@ -402,7 +417,9 @@ class MDP(object):
                     suffix = get_next_gif_suffix()
                 else:
                     suffix = gif_export_suffix
-                t = self.sim_single(policy_fn, obsfeat_fn, cfg.max_traj_len, alg_name=alg_name, record_gif=record_gif, gif_export_dir=gif_export_dir, gif_prefix=gif_prefix, gif_export_suffix=suffix)
+                t = self.sim_single(policy_fn, obsfeat_fn, cfg.max_traj_len, alg_name=alg_name, dagger_action_beta=dagger_action_beta,
+                                    record_gif=record_gif, gif_export_dir=gif_export_dir, gif_prefix=gif_prefix, 
+                                    gif_export_suffix=suffix, dagger_eval=dagger_eval)
                 trajs.append(t)
                 num_sa += len(t)
                 if len(trajs) >= cfg.min_num_trajs and num_sa >= cfg.min_total_sa:
@@ -410,7 +427,7 @@ class MDP(object):
             return TrajBatch.FromTrajs(trajs)
 
         global _global_sim_info
-        _global_sim_info = (self, policy_fn, obsfeat_fn, cfg.max_traj_len, alg_name)
+        _global_sim_info = (self, policy_fn, obsfeat_fn, cfg.max_traj_len)
 
         trajs = []
         num_sa = 0
@@ -426,7 +443,7 @@ class MDP(object):
                         suffix = get_next_gif_suffix()
                     else:
                         suffix = gif_export_suffix
-                    pending.append(pool.apply_async(_rollout, args=(record_gif, gif_export_dir, gif_prefix, suffix,)))
+                    pending.append(pool.apply_async(_rollout, args=(alg_name, dagger_action_beta, record_gif, gif_export_dir, gif_prefix, suffix, dagger_eval)))
                 stillpending = []
                 for job in pending:
                     if job.ready():
@@ -448,16 +465,19 @@ class MDP(object):
             return TrajBatch.FromTrajs(trajs)
 
 _global_sim_info = None
-def _rollout(record_gif, gif_export_dir, gif_prefix, gif_export_suffix):
+def _rollout(alg_name, dagger_action_beta, record_gif, gif_export_dir, gif_prefix, gif_export_suffix, dagger_eval):
     try:
         import os, random; random.seed(os.urandom(4)); 
         # np.random.seed(int(os.urandom(4).encode('hex'), 16))
         np.random.seed(int(binascii.hexlify(os.urandom(4)), 16))
         global _global_sim_info
-        mdp, policy_fn, obsfeat_fn, max_traj_len, alg_name = _global_sim_info
+        mdp, policy_fn, obsfeat_fn, max_traj_len = _global_sim_info
         # from threadpoolctl import threadpool_limits
         # with threadpool_limits(limits=1, user_api='blas'):
-        return mdp.sim_single(policy_fn, obsfeat_fn, max_traj_len, alg_name=alg_name, record_gif=record_gif, gif_export_dir=gif_export_dir, gif_prefix=gif_prefix, gif_export_suffix=gif_export_suffix)
+        return mdp.sim_single(policy_fn, obsfeat_fn, max_traj_len, alg_name=alg_name, dagger_action_beta=dagger_action_beta,
+                              record_gif=record_gif, gif_export_dir=gif_export_dir,
+                              gif_prefix=gif_prefix, gif_export_suffix=gif_export_suffix,
+                              dagger_eval=dagger_eval)
     except KeyboardInterrupt:
         pass
 
