@@ -18,7 +18,7 @@ class DaggerActionBetaDecay(Enum):
 
 class DAggerOptimizer(object):
     def __init__(self, mdp, policy, lr, sim_cfg, policy_obsfeat_fn, reward_obsfeat_fn, ex_obs, ex_a, ex_t, enable_obsnorm, policy_hidden_spec, 
-                 num_epochs=30, minibatch_size=64, action_beta=0.7, action_beta_decay=DaggerActionBetaDecay.NO_DECAY, simple_decay_constant=5):
+                 num_epochs=30, minibatch_size=64, action_beta=0.7, action_beta_decay=DaggerActionBetaDecay.NO_DECAY, simple_decay_constant=5, init_bclone=True):
         self.mdp, self.policy, self.lr, self.sim_cfg, self.policy_obsfeat_fn, self.reward_obsfeat_fn = mdp, policy, lr, sim_cfg, policy_obsfeat_fn, reward_obsfeat_fn
         self.ex_obs, self.ex_a, self.ex_t = ex_obs, ex_a, ex_t
         self.enable_obsnorm = enable_obsnorm
@@ -41,12 +41,13 @@ class DAggerOptimizer(object):
         elif self.action_beta_decay == DaggerActionBetaDecay.NO_DECAY:
             print(f'DAgger Optimizer: Using action beta {self.action_beta}')
         
-        print('Initializing BC weights')
-        for _epoch in range(self.num_epochs):
-            self.step_bclone_minibatch(self.ex_obs, self.ex_a, self.lr, minibatch_size=self.minibatch_size)
-            if _epoch % 10 == 0:
-                print(f'Epoch {_epoch} ...')
-        print('Initialized BC weights!')
+        if init_bclone:
+            print('Initializing BC weights')
+            for _epoch in range(self.num_epochs):
+                self.step_bclone_minibatch(self.ex_obs, self.ex_a, self.lr, minibatch_size=self.minibatch_size)
+                if _epoch % 10 == 0:
+                    print(f'Epoch {_epoch} ...')
+            print('Initialized BC weights!')
         self.initial_weights = np.array(self.policy.get_params(), copy=True)
             
         # root_path = Path(os.environ.get('HOME')) / 'irl_control_container/libraries/algorithms/dagger/DAgger'
@@ -146,6 +147,7 @@ class BehavioralCloningOptimizer(object):
     def __init__(self, mdp, policy, lr, batch_size, obsfeat_fn, ex_obs, ex_a, eval_sim_cfg, eval_freq, train_frac):
         self.mdp, self.policy, self.lr, self.batch_size, self.obsfeat_fn = mdp, policy, lr, batch_size, obsfeat_fn
 
+        self.mdp.sim_mkl()
         # Randomly split data into train/val
         assert ex_obs.shape[0] == ex_a.shape[0]
         num_examples = ex_obs.shape[0]

@@ -3,14 +3,22 @@ from collections import namedtuple
 from contextlib import contextmanager
 import gail.environments as environments
 import numpy as np
+from enum import Enum
 
 import theano
 from theano import tensor
 
 from abc import abstractmethod
 
+
+class BCloneLossFn(Enum):
+    MSE = 'mse'
+    LOG_PROB = 'log_prob'
+
+
 class Policy(nn.Model):
-    def __init__(self, obsfeat_space, action_space, num_actiondist_params, enable_obsnorm, varscope_name):
+    def __init__(self, obsfeat_space, action_space, num_actiondist_params, enable_obsnorm, varscope_name, 
+                 bclone_loss_fn=BCloneLossFn.LOG_PROB, bclone_l1_lambda=0.0, bclone_l2_lambda=0.0):
         self.obsfeat_space, self.action_space, self._num_actiondist_params = obsfeat_space, action_space, num_actiondist_params
 
         with nn.variable_scope(varscope_name) as self.__varscope:
@@ -57,12 +65,30 @@ class Policy(nn.Model):
         self.compute_internal_normalized_obsfeat = thutil.function([obsfeat_B_Df], normalized_obsfeat_B_Df)
 
         # Supervised learning objective: log likelihood of actions given state
-        bclone_loss = -logprobs_B.mean()
+        if bclone_loss_fn == BCloneLossFn.LOG_PROB:
+            bclone_loss = -logprobs_B.mean()
+        elif bclone_loss_fn == BCloneLossFn.MSE:
+            means_B_Da, stdevs_B_Da = self._extract_actiondist_params(actiondist_B_Pa)
+            bclone_loss = tensor.sqr(means_B_Da - input_actions_B_Da).sum(axis=1).mean()
+        
+        reg_term = 0.0
+        if bclone_l1_lambda > 0.0 or bclone_l2_lambda > 0.0:
+            nn_vars = [v for v in param_vars if v.name.split('/')[-1] in ['W', 'b']] # Only get the weights and biases
+            nn_values = util.flatcat([v.get_value() for v in nn_vars])
+            
+        if bclone_l1_lambda > 0.0:
+            reg_term += bclone_l1_lambda*tensor.abs_(nn_values).sum()
+        
+        if bclone_l2_lambda > 0.0:
+            reg_term += bclone_l2_lambda*tensor.sqr(nn_values).sum()
+        
+        bclone_loss_full = bclone_loss + reg_term
+        
         bclone_lr = tensor.scalar(name='bclone_lr')
         self.step_bclone = thutil.function(
             [obsfeat_B_Df, input_actions_B_Da, bclone_lr],
-            bclone_loss,
-            updates=thutil.adam(bclone_loss, param_vars, lr=bclone_lr))
+            bclone_loss_full,
+            updates=thutil.adam(bclone_loss_full, param_vars, lr=bclone_lr))
         self.compute_bclone_loss_and_grad = thutil.function(
             [obsfeat_B_Df, input_actions_B_Da],
             [bclone_loss, thutil.flatgrad(bclone_loss, param_vars)])
@@ -102,7 +128,8 @@ class Policy(nn.Model):
 
 GaussianPolicyConfig = namedtuple('GaussianPolicyConfig', 'hidden_spec, min_stdev, init_logstdev, enable_obsnorm')
 class GaussianPolicy(Policy):
-    def __init__(self, cfg, obsfeat_space, action_space, varscope_name):
+    def __init__(self, cfg, obsfeat_space, action_space, varscope_name, 
+                 bclone_loss_fn=BCloneLossFn.LOG_PROB, bclone_l1_lambda=0.0, bclone_l2_lambda=0.0):
         assert isinstance(cfg, GaussianPolicyConfig)
         assert isinstance(obsfeat_space, ContinuousSpace) and isinstance(action_space, ContinuousSpace)
 
@@ -113,7 +140,10 @@ class GaussianPolicy(Policy):
             action_space=action_space,
             num_actiondist_params=action_space.dim*2,
             enable_obsnorm=cfg.enable_obsnorm,
-            varscope_name=varscope_name)
+            varscope_name=varscope_name,
+            bclone_loss_fn=bclone_loss_fn,
+            bclone_l1_lambda=bclone_l1_lambda,
+            bclone_l2_lambda=bclone_l2_lambda)
 
 
     def _make_actiondist_ops(self, obsfeat_B_Df):
