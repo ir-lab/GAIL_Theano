@@ -117,6 +117,8 @@ class DAggerOptimizer(object):
             for _epoch in range(self.num_epochs):
                 loss = self.step_bclone_minibatch(obs_data, act_data, self.lr, minibatch_size=self.minibatch_size)
             
+            # self.policy.update_obsnorm(sampbatch.obsfeat.stacked)
+
         self.total_num_trajs += len(sampbatch)
         self.total_num_sa += sum(len(traj) for traj in sampbatch)
         self.total_time += t_all.dt
@@ -164,6 +166,7 @@ class BehavioralCloningOptimizer(object):
 
         self.total_time = 0.
         self.curr_iter = 0
+        self.total_num_sa = 0
 
     def step(self):
         with util.Timer() as t_all:
@@ -173,7 +176,10 @@ class BehavioralCloningOptimizer(object):
             batch_a_B_Da = self.train_ex_a[inds,:]
             # Take step
             loss = self.policy.step_bclone(batch_obsfeat_B_Do, batch_a_B_Da, self.lr)
-
+            
+            # self.policy.update_obsnorm(batch_obsfeat_B_Do)
+            
+            self.total_num_sa += self.batch_size
             # Roll out trajectories when it's time to evaluate our policy
             val_loss = val_acc = trueret = avgr = ent = np.nan
             avglen = -1
@@ -200,6 +206,7 @@ class BehavioralCloningOptimizer(object):
             ('avglen', avglen, int), # average traj length
             ('ent', ent, float), # entropy of action distributions
             ('ttotal', self.total_time, float), # total time
+            ('nsa', self.total_num_sa, int), # total time
         ]
         self.curr_iter += 1
         return fields
