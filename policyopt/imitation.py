@@ -577,6 +577,12 @@ class ImitationOptimizer(object):
         self.curr_iter = 0
         self.last_sampbatch = None # for outside access for debugging
 
+    def set_iterative_training_data(self, df):
+        self.curr_iter = int(df['iter']) + 1
+        self.total_num_trajs = int(df['ntrajs'])
+        self.total_time = df['ttotal']
+        self.total_num_sa = int(df['nsa'])
+
     def step(self):
         with util.Timer() as t_all:
 

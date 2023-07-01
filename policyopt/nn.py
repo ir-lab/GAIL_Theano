@@ -334,7 +334,7 @@ def _type_to_col(t, pos):
 class TrainingLog(object):
     '''A training log backed by PyTables. Stores diagnostic numbers over time and model snapshots.'''
 
-    def __init__(self, filename, attrs):
+    def __init__(self, filename, attrs, load_log=False, load_last_idx=None):
         if filename is None:
             util.warn('Warning: not writing log to any file!')
             self.f = None
@@ -342,9 +342,17 @@ class TrainingLog(object):
             if os.path.exists(filename):
                 # raise RuntimeError('Log file %s already exists' % filename)
                 print('Log file %s already exists' % filename)
-            self.f = tables.open_file(filename, mode='w')
-            for k, v in attrs: self.f.root._v_attrs[k] = v
-            self.log_table = None
+                self.f = tables.open_file(filename, mode='a')
+                if load_log:
+                    self.log_table = self.f.get_node('/log')
+                    if load_last_idx is not None:
+                        self.log_table.remove_rows(load_last_idx+1,np.iinfo(np.int64).max)
+                else:
+                    self.log_table = None
+            else:
+                self.f = tables.open_file(filename, mode='w')
+                for k, v in attrs: self.f.root._v_attrs[k] = v
+                self.log_table = None
 
         self.schema = None # list of col name / types for display
 
