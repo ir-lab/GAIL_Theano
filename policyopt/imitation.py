@@ -17,12 +17,12 @@ class DaggerActionBetaDecay(Enum):
 
 
 class DAggerOptimizer(object):
-    def __init__(self, mdp, policy, lr, sim_cfg, policy_obsfeat_fn, reward_obsfeat_fn, ex_obs, ex_a, ex_t, enable_obsnorm, policy_hidden_spec, 
-                 num_epochs=30, minibatch_size=64, action_beta=0.7, action_beta_decay=DaggerActionBetaDecay.NO_DECAY, simple_decay_constant=5, init_bclone=True):
-        self.mdp, self.policy, self.lr, self.sim_cfg, self.policy_obsfeat_fn, self.reward_obsfeat_fn = mdp, policy, lr, sim_cfg, policy_obsfeat_fn, reward_obsfeat_fn
+    def __init__(self, mdp, policy, lr, sim_cfg, ex_obs, ex_a, ex_t, val_ex_obs, val_ex_a, val_ex_t, eval_freq, num_epochs=30, minibatch_size=64, action_beta=0.7, 
+                 action_beta_decay=DaggerActionBetaDecay.NO_DECAY, simple_decay_constant=5, init_bclone=True):
+        self.mdp, self.policy, self.lr, self.sim_cfg = mdp, policy, lr, sim_cfg
         self.ex_obs, self.ex_a, self.ex_t = ex_obs, ex_a, ex_t
-        self.enable_obsnorm = enable_obsnorm
-        self.policy_hidden_spec = policy_hidden_spec
+        self.val_ex_obs, self.val_ex_a, self.val_ex_t = val_ex_obs, val_ex_a, val_ex_t
+        self.eval_freq = eval_freq
         self.num_epochs = num_epochs
         self.minibatch_size = minibatch_size
         self.action_beta = action_beta
@@ -50,25 +50,22 @@ class DAggerOptimizer(object):
             print('Initialized BC weights!')
         self.initial_weights = np.array(self.policy.get_params(), copy=True)
             
-        # root_path = Path(os.environ.get('HOME')) / 'irl_control_container/libraries/algorithms/dagger/DAgger'
-        # if mdp.env_name == 'MountainCarContinuous-v0':
-        #     json_file = open(root_path / 'Actor_model_architecture.json', 'r')
-        #     loaded_model_json = json_file.read()
-        #     json_file.close()
-        #     self.mc_policy_fn = model_from_json(loaded_model_json)
-        #     self.mc_policy_fn.load_weights(root_path / "DDPG_actor_model_750.h5")    
-    
     def reset_policy(self):
-        self.policy.set_params(self.initial_weights)
+        nn_w_vars = [v for v in self.policy.get_trainable_variables() if v.name.split('/')[-1] == 'W'] # Only get the weights
+        for w_var in nn_w_vars:
+            w_var_shape = w_var.get_value().shape
+            s = np.sqrt(6. / (w_var_shape[0] + w_var_shape[1]))
+            initializer = np.random.uniform(low=-s, high=s, size=(w_var_shape[0],w_var_shape[1]))
+            w_var.set_value(initializer.astype(theano.config.floatX))
+
+        nn_b_vars = [v for v in self.policy.get_trainable_variables() if v.name.split('/')[-1] == 'b'] # Only get the biases
+        for b_var in nn_b_vars:
+            b_var_shape = b_var.get_value().shape
+            b_var.set_value(np.zeros(shape=b_var_shape, dtype=theano.config.floatX))
 
     def policy_fn(self, obsfeat_B_Df, env):
-        # if self.mdp.env_name.startswith('path_follow'):
         expert_action = env.dagger_expert_policy_fn()
         expert_action = np.array(expert_action, dtype=theano.config.floatX).reshape(1,-1)
-        # elif self.mdp.env_name == 'MountainCarContinuous-v0':
-        #     expert_action = self.mc_policy_fn.predict(obsfeat_B_Df)
-        #     expert_action = np.array(expert_action, dtype=theano.config.floatX).reshape(1,-1)
-        
         predicted_action, _ = self.policy.sample_actions(obsfeat_B_Df, deterministic=True)
         return expert_action, predicted_action
 
@@ -84,12 +81,16 @@ class DAggerOptimizer(object):
         """
         num_data = obs_data.shape[0]
         num_minibatches = int(num_data / minibatch_size)
+        losses = []
         for i in range(num_minibatches):
             start_idx = i * minibatch_size
             end_idx = (i + 1) * minibatch_size
             obs_minibatch = obs_data[start_idx:end_idx]
             act_minibatch = act_data[start_idx:end_idx]
-            self.policy.step_bclone(obs_minibatch, act_minibatch, lr)
+            loss = self.policy.step_bclone(obs_minibatch, act_minibatch, lr)
+            losses.append(loss)
+        avg_minibatch_loss = np.mean(losses)
+        return avg_minibatch_loss
     
     def step(self):
         with util.Timer() as t_all:
@@ -102,7 +103,7 @@ class DAggerOptimizer(object):
                 
                 sampbatch: TrajBatch = self.mdp.sim_mp(
                     policy_fn=lambda obsfeat_B_Df, env: self.policy_fn(obsfeat_B_Df, env),
-                    obsfeat_fn=self.policy_obsfeat_fn,
+                    obsfeat_fn=lambda obs: obs,
                     cfg=self.sim_cfg,
                     alg_name='dagger',
                     dagger_action_beta=action_beta)
@@ -112,12 +113,25 @@ class DAggerOptimizer(object):
             
             obs_data = all_traj_batch.obs.stacked
             act_data = all_traj_batch.a.stacked
+            assert obs_data.shape[0] == act_data.shape[0]
+            
             # Do policy updates here
             self.reset_policy()
             for _epoch in range(self.num_epochs):
                 loss = self.step_bclone_minibatch(obs_data, act_data, self.lr, minibatch_size=self.minibatch_size)
             
             # self.policy.update_obsnorm(sampbatch.obsfeat.stacked)
+
+        val_loss = val_acc = np.nan
+        if self.eval_freq != 0 and self.curr_iter % self.eval_freq == 0:
+            val_loss = self.policy.compute_bclone_loss(self.val_ex_obs, self.val_ex_a)
+            # Evaluate validation accuracy (independent of standard deviation)
+            if isinstance(self.mdp.action_space, ContinuousSpace):
+                val_acc = -np.square(self.policy.compute_actiondist_mean(self.val_ex_obs) - self.val_ex_a).sum(axis=1).mean()
+            else:
+                assert self.val_ex_a.shape[1] == 1
+                # val_acc = (self.policy.sample_actions(self.val_ex_obsfeat)[1].argmax(axis=1) == self.val_ex_a[1]).mean()
+                val_acc = -val_loss # val accuracy doesn't seem too meaningful so just use this
 
         self.total_num_trajs += len(sampbatch)
         self.total_num_sa += sum(len(traj) for traj in sampbatch)
@@ -127,39 +141,40 @@ class DAggerOptimizer(object):
             ('iter', self.curr_iter, int),
             ('trueret', sampbatch.r.padded(fill=0.).sum(axis=1).mean(), float), # average return for this batch of trajectories
             ('avglen', int(np.mean([len(traj) for traj in sampbatch])), int), # average traj length
-            ('ntrajs', self.total_num_trajs, int), # total number of trajs sampled over the course of training
             ('nsa', self.total_num_sa, int), # total number of state-action pairs sampled over the course of training
-            # ('avgr', rcurr_stacked.mean(), float), # average regularized reward encountered
-            # ('avgunregr', orig_rcurr_stacked.mean(), float), # average unregularized reward
-            # ('avgpreg', policyentbonus_B.mean(), float), # average policy regularization
-            # ('bcloss', -self.policy.compute_action_logprobs(exbatch_pobsfeat, exbatch_a).mean(), float), # negative log likelihood of expert actions
-            # ('bcloss', np.square(self.policy.compute_actiondist_mean(exbatch_pobsfeat) - exbatch_a).sum(axis=1).mean(axis=0), float),
+            ('ntrajs', self.total_num_trajs, int), # total number of trajs sampled over the course of training
+            ('bcloss', loss, float), # supervised learning loss
+            ('valloss', val_loss, float), # loss on validation set
+            ('valacc', val_acc, float), # loss on validation set
+            ('beta', action_beta, float),
             ('tsamp', t_sample.dt, float), # time for sampling
-            # ('tadv', t_adv.dt + t_vf_fit.dt, float), # time for advantage computation
-            # ('tstep', t_step.dt, float), # time for step computation
             ('ttotal', self.total_time, float), # total time
-            ('beta', action_beta, float)
-            # ('loss', loss, float)
         ] 
 
         self.curr_iter += 1
         return fields
 
 class BehavioralCloningOptimizer(object):
-    def __init__(self, mdp, policy, lr, batch_size, obsfeat_fn, ex_obs, ex_a, eval_sim_cfg, eval_freq, train_frac):
+    def __init__(self, mdp, policy, lr, batch_size, obsfeat_fn, ex_obs, ex_a, val_ex_obs, val_ex_a, eval_sim_cfg, eval_freq, train_frac):
         self.mdp, self.policy, self.lr, self.batch_size, self.obsfeat_fn = mdp, policy, lr, batch_size, obsfeat_fn
 
         self.mdp.sim_mkl()
         # Randomly split data into train/val
         assert ex_obs.shape[0] == ex_a.shape[0]
-        num_examples = ex_obs.shape[0]
-        num_train = int(train_frac * num_examples)
-        shuffled_inds = np.random.permutation(num_examples)
-        train_inds, val_inds = shuffled_inds[:num_train], shuffled_inds[num_train:]
-        assert len(train_inds) >= 1 and len(val_inds) >= 1
-        print('{} training examples and {} validation examples'.format(len(train_inds), len(val_inds)))
-        self.train_ex_obsfeat, self.train_ex_a = self.obsfeat_fn(ex_obs[train_inds]), ex_a[train_inds]
-        self.val_ex_obsfeat, self.val_ex_a = self.obsfeat_fn(ex_obs[val_inds]), ex_a[val_inds]
+        assert val_ex_obs.shape[0] == val_ex_a.shape[0]
+
+        # num_examples = ex_obs.shape[0]
+        # num_train = int(train_frac * num_examples)
+        # shuffled_inds = np.random.permutation(num_examples)
+        # train_inds, val_inds = shuffled_inds[:num_train], shuffled_inds[num_train:]
+        # assert len(train_inds) >= 1 and len(val_inds) >= 1
+        # print('{} training examples and {} validation examples'.format(len(train_inds), len(val_inds)))
+        # self.train_ex_obsfeat, self.train_ex_a = self.obsfeat_fn(ex_obs[train_inds]), ex_a[train_inds]
+        # self.val_ex_obsfeat, self.val_ex_a = self.obsfeat_fn(ex_obs[val_inds]), ex_a[val_inds]
+
+        print('{} training examples and {} validation examples'.format(ex_obs.shape[0], val_ex_obs.shape[0]))
+        self.train_ex_obsfeat, self.train_ex_a = self.obsfeat_fn(ex_obs), ex_a
+        self.val_ex_obsfeat, self.val_ex_a = self.obsfeat_fn(val_ex_obs), val_ex_a
 
         self.eval_sim_cfg = eval_sim_cfg
         self.eval_freq = eval_freq
@@ -179,19 +194,19 @@ class BehavioralCloningOptimizer(object):
             
             # self.policy.update_obsnorm(batch_obsfeat_B_Do)
             
-            self.total_num_sa += self.batch_size
-            # Roll out trajectories when it's time to evaluate our policy
-            val_loss = val_acc = trueret = avgr = ent = np.nan
-            avglen = -1
-            if self.eval_freq != 0 and self.curr_iter % self.eval_freq == 0:
-                val_loss = self.policy.compute_bclone_loss(self.val_ex_obsfeat, self.val_ex_a)
-                # Evaluate validation accuracy (independent of standard deviation)
-                if isinstance(self.mdp.action_space, ContinuousSpace):
-                    val_acc = -np.square(self.policy.compute_actiondist_mean(self.val_ex_obsfeat) - self.val_ex_a).sum(axis=1).mean()
-                else:
-                    assert self.val_ex_a.shape[1] == 1
-                    # val_acc = (self.policy.sample_actions(self.val_ex_obsfeat)[1].argmax(axis=1) == self.val_ex_a[1]).mean()
-                    val_acc = -val_loss # val accuracy doesn't seem too meaningful so just use this
+        self.total_num_sa += self.batch_size
+        # Roll out trajectories when it's time to evaluate our policy
+        val_loss = val_acc = trueret = avgr = ent = np.nan
+        avglen = -1
+        if self.eval_freq != 0 and self.curr_iter % self.eval_freq == 0:
+            val_loss = self.policy.compute_bclone_loss(self.val_ex_obsfeat, self.val_ex_a)
+            # Evaluate validation accuracy (independent of standard deviation)
+            if isinstance(self.mdp.action_space, ContinuousSpace):
+                val_acc = -np.square(self.policy.compute_actiondist_mean(self.val_ex_obsfeat) - self.val_ex_a).sum(axis=1).mean()
+            else:
+                assert self.val_ex_a.shape[1] == 1
+                # val_acc = (self.policy.sample_actions(self.val_ex_obsfeat)[1].argmax(axis=1) == self.val_ex_a[1]).mean()
+                val_acc = -val_loss # val accuracy doesn't seem too meaningful so just use this
 
 
         # Log
@@ -556,7 +571,7 @@ class LinearReward(object):
 
 
 class ImitationOptimizer(object):
-    def __init__(self, mdp, discount, lam, policy, sim_cfg, step_func, reward_func, value_func, policy_obsfeat_fn, reward_obsfeat_fn, policy_ent_reg, ex_obs, ex_a, ex_t):
+    def __init__(self, mdp, discount, lam, policy, sim_cfg, step_func, reward_func, value_func, policy_obsfeat_fn, reward_obsfeat_fn, policy_ent_reg, ex_obs, ex_a, ex_t, val_ex_obs, val_ex_a, val_ex_t, eval_freq):
         self.mdp, self.discount, self.lam, self.policy = mdp, discount, lam, policy
         self.sim_cfg = sim_cfg
         self.step_func = step_func
@@ -569,7 +584,10 @@ class ImitationOptimizer(object):
         util.header('Policy entropy regularization: {}'.format(self.policy_ent_reg))
 
         assert ex_obs.ndim == ex_a.ndim == 2 and ex_t.ndim == 1 and ex_obs.shape[0] == ex_a.shape[0] == ex_t.shape[0]
+        assert val_ex_obs.ndim == val_ex_a.ndim == 2 and val_ex_t.ndim == 1 and val_ex_obs.shape[0] == val_ex_a.shape[0] == val_ex_t.shape[0]
         self.ex_pobsfeat, self.ex_robsfeat, self.ex_a, self.ex_t = policy_obsfeat_fn(ex_obs), reward_obsfeat_fn(ex_obs), ex_a, ex_t
+        self.val_ex_pobsfeat, self.val_ex_robsfeat, self.val_ex_a, self.val_ex_t = policy_obsfeat_fn(val_ex_obs), reward_obsfeat_fn(val_ex_obs), val_ex_a, val_ex_t
+        self.eval_freq = eval_freq
 
         self.total_num_trajs = 0
         self.total_num_sa = 0
@@ -664,6 +682,21 @@ class ImitationOptimizer(object):
                 else:
                     vfit_print = []
 
+        val_loss = val_acc = bcloss = ent = np.nan
+        if self.eval_freq != 0 and self.curr_iter % self.eval_freq == 0:
+            # val_loss = -self.policy.compute_action_logprobs(exbatch_pobsfeat, exbatch_a).mean()
+            val_loss = self.policy.compute_bclone_loss(self.val_ex_pobsfeat, self.val_ex_a)
+            # Evaluate validation accuracy (independent of standard deviation)
+            if isinstance(self.mdp.action_space, ContinuousSpace):
+                val_acc = -np.square(self.policy.compute_actiondist_mean(self.val_ex_pobsfeat) - self.val_ex_a).sum(axis=1).mean()
+            else:
+                assert self.val_ex_a.shape[1] == 1
+                val_acc = -val_loss # val accuracy doesn't seem too meaningful so just use this
+            
+            bcloss = self.policy.compute_bclone_loss(exbatch_pobsfeat, exbatch_a)
+            # bcloss = -self.policy.compute_action_logprobs(exbatch_pobsfeat, exbatch_a).mean()
+            ent = self.policy._compute_actiondist_entropy(sampbatch.adist.stacked).mean()
+        
         # Log
         self.total_num_trajs += len(sampbatch)
         self.total_num_sa += sum(len(traj) for traj in sampbatch)
@@ -675,19 +708,20 @@ class ImitationOptimizer(object):
             ('avglen', int(np.mean([len(traj) for traj in sampbatch])), int), # average traj length
             ('ntrajs', self.total_num_trajs, int), # total number of trajs sampled over the course of training
             ('nsa', self.total_num_sa, int), # total number of state-action pairs sampled over the course of training
-            # ('ent', self.policy._compute_actiondist_entropy(sampbatch.adist.stacked).mean(), float), # entropy of action distributions
-            # ('vf_r2', vfunc_r2, float),
-            # ('tdvf_r2', simplev_r2, float),
-            # ('dx', util.maxnorm(params0_P - self.policy.get_params()), float), # max parameter difference from last iteration
-            # ] + step_print + vfit_print + rfit_print + [
-            # ('avgr', rcurr_stacked.mean(), float), # average regularized reward encountered
-            # ('avgunregr', orig_rcurr_stacked.mean(), float), # average unregularized reward
-            # ('avgpreg', policyentbonus_B.mean(), float), # average policy regularization
-            # ('bcloss', -self.policy.compute_action_logprobs(exbatch_pobsfeat, exbatch_a).mean(), float), # negative log likelihood of expert actions
-            # ('bcloss', np.square(self.policy.compute_actiondist_mean(exbatch_pobsfeat) - exbatch_a).sum(axis=1).mean(axis=0), float),
-            # ('tsamp', t_sample.dt, float), # time for sampling
-            # ('tadv', t_adv.dt + t_vf_fit.dt, float), # time for advantage computation
-            # ('tstep', t_step.dt, float), # time for step computation
+            ('ent', ent, float), # entropy of action distributions
+            ('vf_r2', vfunc_r2, float),
+            ('tdvf_r2', simplev_r2, float),
+            ('dx', util.maxnorm(params0_P - self.policy.get_params()), float), # max parameter difference from last iteration
+            ] + step_print + vfit_print + rfit_print + [
+            ('avgr', rcurr_stacked.mean(), float), # average regularized reward encountered
+            ('avgunregr', orig_rcurr_stacked.mean(), float), # average unregularized reward
+            ('avgpreg', policyentbonus_B.mean(), float), # average policy regularization
+            ('bcloss', bcloss, float), # negative log likelihood of expert actions
+            ('valloss', val_loss, float), # loss on validation set
+            ('valacc', val_acc, float), # loss on validation set
+            ('tsamp', t_sample.dt, float), # time for sampling
+            ('tadv', t_adv.dt + t_vf_fit.dt, float), # time for advantage computation
+            ('tstep', t_step.dt, float), # time for step computation
             ('ttotal', self.total_time, float), # total time
         ]
         self.curr_iter += 1

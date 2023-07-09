@@ -334,19 +334,19 @@ def _type_to_col(t, pos):
 class TrainingLog(object):
     '''A training log backed by PyTables. Stores diagnostic numbers over time and model snapshots.'''
 
-    def __init__(self, filename, attrs, load_log=False, load_last_idx=None):
+    def __init__(self, filename, attrs, load_log=False, log_last_idx=None):
         if filename is None:
             util.warn('Warning: not writing log to any file!')
             self.f = None
         else:
             if os.path.exists(filename):
                 # raise RuntimeError('Log file %s already exists' % filename)
-                print('Log file %s already exists' % filename)
                 self.f = tables.open_file(filename, mode='a')
+                print('Log file %s already exists' % filename)
                 if load_log:
                     self.log_table = self.f.get_node('/log')
-                    if load_last_idx is not None:
-                        self.log_table.remove_rows(load_last_idx+1,np.iinfo(np.int64).max)
+                    if log_last_idx is not None:
+                        self.log_table.remove_rows(log_last_idx+1,np.iinfo(np.int64).max)
                 else:
                     self.log_table = None
             else:
@@ -355,7 +355,18 @@ class TrainingLog(object):
                 self.log_table = None
 
         self.schema = None # list of col name / types for display
-
+    
+    def remove_greater_snapshots(self, snapshot_idx):
+        snapshot_names = self.f.root.snapshots._v_children.keys()
+        assert all(name.startswith('iter') for name in snapshot_names)
+        all_snapshot_idxs = np.asarray(sorted([int(name[len('iter'):]) for name in snapshot_names]))
+        greater_snap_idxs = [x for x in all_snapshot_idxs if x > snapshot_idx]
+        for idx in greater_snap_idxs:
+            self.f.remove_node('/snapshots/iter{:07d}'.format(idx), recursive=True)
+        
+        if len(greater_snap_idxs) == 0:
+            print(f'Warning: no greater snapshot idxs than idx {snapshot_idx}!')
+    
     def close(self):
         if self.f is not None: self.f.close()
 
