@@ -389,7 +389,7 @@ class MDP(object):
 
     def sim_mp(self, policy_fn, obsfeat_fn, cfg, maxtasksperchild=200, alg_name=None, dagger_action_beta=0.7,
                record_gif=False, gif_export_dir=None, gif_prefix=None, gif_export_suffix=None, 
-               dagger_eval=False):
+               dagger_eval=False, exact_num_trajs=False):
         '''
         Multiprocessed simulation
         Not thread safe! But why would you want this to be thread safe anyway?
@@ -437,6 +437,7 @@ class MDP(object):
             pool = multiprocessing.Pool(processes=num_processes, maxtasksperchild=maxtasksperchild)
             pending = []
             done = False
+            submit_count = 0
             while True:
                 if len(pending) < num_processes and not done:
                     if record_gif and gif_export_suffix is None:
@@ -444,6 +445,7 @@ class MDP(object):
                     else:
                         suffix = gif_export_suffix
                     pending.append(pool.apply_async(_rollout, args=(alg_name, dagger_action_beta, record_gif, gif_export_dir, gif_prefix, suffix, dagger_eval)))
+                    submit_count += 1
                 stillpending = []
                 for job in pending:
                     if job.ready():
@@ -453,8 +455,13 @@ class MDP(object):
                     else:
                         stillpending.append(job)
                 pending = stillpending
-                if len(trajs) >= cfg.min_num_trajs and num_sa >= cfg.min_total_sa:
-                    done = True
+                
+                if exact_num_trajs:
+                    done = bool(submit_count == cfg.min_num_trajs)
+                else:
+                    done = bool(len(trajs) >= cfg.min_num_trajs and num_sa >= cfg.min_total_sa)
+                
+                if done:
                     if len(pending) == 0:
                         break
                 sleep(.001)

@@ -18,7 +18,7 @@ class DaggerActionBetaDecay(Enum):
 
 class DAggerOptimizer(object):
     def __init__(self, mdp, policy, lr, sim_cfg, ex_obs, ex_a, ex_t, val_ex_obs, val_ex_a, val_ex_t, eval_freq, num_epochs=30, minibatch_size=64, action_beta=0.7, 
-                 action_beta_decay=DaggerActionBetaDecay.NO_DECAY, simple_decay_constant=5, init_bclone=True):
+                 action_beta_decay=DaggerActionBetaDecay.NO_DECAY, simple_decay_constant=5, init_bclone=False):
         self.mdp, self.policy, self.lr, self.sim_cfg = mdp, policy, lr, sim_cfg
         self.ex_obs, self.ex_a, self.ex_t = ex_obs, ex_a, ex_t
         self.val_ex_obs, self.val_ex_a, self.val_ex_t = val_ex_obs, val_ex_a, val_ex_t
