@@ -10,66 +10,95 @@ from keras.models import model_from_json
 from pathlib import Path
 import copy
 from enum import Enum
+import resource
+import psutil
+import os
 
 class DaggerActionBetaDecay(Enum):
     NO_DECAY = 'no_decay'
     SIMPLE = 'simple'
+    LINEAR = 'linear'
 
 
 class DAggerOptimizer(object):
-    def __init__(self, mdp, policy, lr, sim_cfg, ex_obs, ex_a, ex_t, val_ex_obs, val_ex_a, val_ex_t, eval_freq, num_epochs=30, minibatch_size=64, action_beta=0.7, 
-                 action_beta_decay=DaggerActionBetaDecay.NO_DECAY, simple_decay_constant=5, init_bclone=False):
+    def __init__(self, mdp, policy, lr, sim_cfg, ex_obs, ex_a, ex_t, val_ex_obs, val_ex_a, val_ex_t, eval_freq, 
+                 num_epochs=30, minibatch_size=64, beta_start=0.5, beta_decay=0.95, perform_reset_policy=True,
+                 init_bclone=False):
         self.mdp, self.policy, self.lr, self.sim_cfg = mdp, policy, lr, sim_cfg
         self.ex_obs, self.ex_a, self.ex_t = ex_obs, ex_a, ex_t
         self.val_ex_obs, self.val_ex_a, self.val_ex_t = val_ex_obs, val_ex_a, val_ex_t
         self.eval_freq = eval_freq
         self.num_epochs = num_epochs
         self.minibatch_size = minibatch_size
-        self.action_beta = action_beta
-        self.action_beta_decay = action_beta_decay
-        self.simple_decay_constant = simple_decay_constant
+        self.beta = beta_start
+        self.beta_decay = beta_decay
         self.all_trajs = []
         self.total_num_trajs = 0
         self.total_num_sa = 0
         self.total_time = 0.   
         self.curr_iter = 0
-        
+        self.init_bclone = init_bclone
+        self.subsample_rate = 1
+        self.reduce_epochs = False
+        self.perform_reset_policy = perform_reset_policy
+
+        if isinstance(self.policy, rl.DeterministicPolicy):
+            print("DAgger Optimizer: Training with Deterministic Policy")
+            self._deterministic_training = True
+        else:
+            print("DAgger Optimizer: Training with Non-Deterministic Policy")
+            self._deterministic_training = False
+
         self.mdp.sim_mkl()
-        if self.action_beta_decay == DaggerActionBetaDecay.SIMPLE:
-            assert self.simple_decay_constant >= 0
-            print(f'DAgger Optimizer: Using simple decay constant {self.simple_decay_constant}')
-        elif self.action_beta_decay == DaggerActionBetaDecay.NO_DECAY:
-            print(f'DAgger Optimizer: Using action beta {self.action_beta}')
-        
-        if init_bclone:
+        print(f"DAgger Optimizer: Using beta start of {self.beta} and beta decay {self.beta_decay}")
+        # if self.action_beta_decay == DaggerActionBetaDecay.SIMPLE:
+        #     assert self.simple_decay_constant >= 0
+        #     print(f'DAgger Optimizer: Using simple decay constant {self.simple_decay_constant}')
+        # elif self.action_beta_decay == DaggerActionBetaDecay.NO_DECAY:
+        #     print(f'DAgger Optimizer: Using action beta {self.action_beta}')
+        # elif self.action_beta_decay == DaggerActionBetaDecay.LINEAR:
+        #     print(f'DAgger Optimizer: Using linear decay constant {self.linear_decay_constant}')
+
+        if self.init_bclone:
             print('Initializing BC weights')
-            for _epoch in range(self.num_epochs):
-                self.step_bclone_minibatch(self.ex_obs, self.ex_a, self.lr, minibatch_size=self.minibatch_size)
-                if _epoch % 10 == 0:
+            for _epoch in range(15_000):
+                inds = np.random.choice(self.ex_obs.shape[0], size=int(self.minibatch_size))
+                batch_obsfeat_B_Do = self.ex_obs[inds,:]
+                batch_a_B_Da = self.ex_a[inds,:]
+                # Take step
+                loss = self.policy.step_bclone(batch_obsfeat_B_Do, batch_a_B_Da, 1e-4)
+                
+                # self.step_bclone_minibatch(self.ex_obs, self.ex_a, self.lr, minibatch_size=self.minibatch_size)
+                if _epoch % 1000 == 0:
                     print(f'Epoch {_epoch} ...')
             print('Initialized BC weights!')
         self.initial_weights = np.array(self.policy.get_params(), copy=True)
             
     def reset_policy(self):
-        nn_w_vars = [v for v in self.policy.get_trainable_variables() if v.name.split('/')[-1] == 'W'] # Only get the weights
-        for w_var in nn_w_vars:
-            w_var_shape = w_var.get_value().shape
-            s = np.sqrt(6. / (w_var_shape[0] + w_var_shape[1]))
-            initializer = np.random.uniform(low=-s, high=s, size=(w_var_shape[0],w_var_shape[1]))
-            w_var.set_value(initializer.astype(theano.config.floatX))
+        if self.init_bclone:
+            # self.step_bclone_minibatch(self.ex_obs, self.ex_a, self.lr, minibatch_size=self.minibatch_size)
+            self.policy.set_params(self.initial_weights)
+        else:
+            nn_w_vars = [v for v in self.policy.get_trainable_variables() if v.name.split('/')[-1] == 'W'] # Only get the weights
+            for w_var in nn_w_vars:
+                w_var_shape = w_var.get_value().shape
+                s = np.sqrt(6. / (w_var_shape[0] + w_var_shape[1]))
+                initializer = np.random.uniform(low=-s, high=s, size=(w_var_shape[0],w_var_shape[1]))
+                w_var.set_value(initializer.astype(theano.config.floatX))
 
-        nn_b_vars = [v for v in self.policy.get_trainable_variables() if v.name.split('/')[-1] == 'b'] # Only get the biases
-        for b_var in nn_b_vars:
-            b_var_shape = b_var.get_value().shape
-            b_var.set_value(np.zeros(shape=b_var_shape, dtype=theano.config.floatX))
-
-    def policy_fn(self, obsfeat_B_Df, env):
+            nn_b_vars = [v for v in self.policy.get_trainable_variables() if v.name.split('/')[-1] == 'b'] # Only get the biases
+            for b_var in nn_b_vars:
+                b_var_shape = b_var.get_value().shape
+                b_var.set_value(np.zeros(shape=b_var_shape, dtype=theano.config.floatX))
+        
+    
+    # def policy_fn(self, obsfeat_B_Df, env, deterministic=True):
+    def policy_fn(self, obsfeat_B_Df, env, deterministic):
         expert_action = env.dagger_expert_policy_fn()
         expert_action = np.array(expert_action, dtype=theano.config.floatX).reshape(1,-1)
-        predicted_action, _ = self.policy.sample_actions(obsfeat_B_Df, deterministic=True)
+        predicted_action, _ = self.policy.sample_actions(obsfeat_B_Df, deterministic=deterministic)
         return expert_action, predicted_action
 
-    
     def step_bclone_minibatch(self, obs_data, act_data, lr, minibatch_size=64):
         """
         Perform minibatch updates for the policy
@@ -95,31 +124,38 @@ class DAggerOptimizer(object):
     def step(self):
         with util.Timer() as t_all:
             with util.Timer() as t_sample:
-                if self.action_beta_decay == DaggerActionBetaDecay.NO_DECAY:
-                    action_beta = self.action_beta
-                elif self.action_beta_decay == DaggerActionBetaDecay.SIMPLE:
-                    x = self.curr_iter
-                    action_beta = x/(x + self.simple_decay_constant)
-                
+                # if self.action_beta_decay == DaggerActionBetaDecay.NO_DECAY:
+                #     action_beta = self.action_beta
+                # elif self.action_beta_decay == DaggerActionBetaDecay.SIMPLE:
+                #     x = self.curr_iter
+                #     action_beta = x/(x + self.simple_decay_constant)
+                # elif self.action_beta_decay == DaggerActionBetaDecay.LINEAR:
+                #     action_beta = self.linear_decay_constant*self.curr_iter
+
                 sampbatch: TrajBatch = self.mdp.sim_mp(
-                    policy_fn=lambda obsfeat_B_Df, env: self.policy_fn(obsfeat_B_Df, env),
+                    # policy_fn=lambda obsfeat_B_Df, env: self.policy_fn(obsfeat_B_Df, env, self._deterministic_training),
+                    policy_fn=lambda obsfeat_B_Df, env: self.policy_fn(obsfeat_B_Df, env, self._deterministic_training),
                     obsfeat_fn=lambda obs: obs,
                     cfg=self.sim_cfg,
                     alg_name='dagger',
-                    dagger_action_beta=action_beta)
+                    dagger_action_beta=self.beta)
 
             self.all_trajs += sampbatch.trajs
             all_traj_batch = TrajBatch.FromTrajs(self.all_trajs)
             
-            obs_data = all_traj_batch.obs.stacked
-            act_data = all_traj_batch.a.stacked
+            obs_data = all_traj_batch.obs.stacked[::self.subsample_rate]
+            act_data = all_traj_batch.a.stacked[::self.subsample_rate]
             assert obs_data.shape[0] == act_data.shape[0]
             
+            if self.perform_reset_policy:
+                self.reset_policy()
+            
             # Do policy updates here
-            self.reset_policy()
             for _epoch in range(self.num_epochs):
                 loss = self.step_bclone_minibatch(obs_data, act_data, self.lr, minibatch_size=self.minibatch_size)
             
+            if self.reduce_epochs:
+                self.num_epochs = max(1, self.num_epochs - 2)
             # self.policy.update_obsnorm(sampbatch.obsfeat.stacked)
 
         val_loss = val_acc = np.nan
@@ -137,6 +173,7 @@ class DAggerOptimizer(object):
         self.total_num_sa += sum(len(traj) for traj in sampbatch)
         self.total_time += t_all.dt
         
+        
         fields = [
             ('iter', self.curr_iter, int),
             ('trueret', sampbatch.r.padded(fill=0.).sum(axis=1).mean(), float), # average return for this batch of trajectories
@@ -146,12 +183,21 @@ class DAggerOptimizer(object):
             ('bcloss', loss, float), # supervised learning loss
             ('valloss', val_loss, float), # loss on validation set
             ('valacc', val_acc, float), # loss on validation set
-            ('beta', action_beta, float),
+            ('beta', self.beta, float),
+            ('samprt', self.subsample_rate, int),
+            ('nepochs', self.num_epochs, int),
             ('tsamp', t_sample.dt, float), # time for sampling
             ('ttotal', self.total_time, float), # total time
+            ('max_mem', int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1000.), int), # max mem usage
+            ('cur_mem', int(psutil.Process(os.getpid()).memory_info().rss / 1024 ** 2), int), # cur mem usage
         ] 
 
         self.curr_iter += 1
+
+        self.beta *= self.beta_decay
+        # self.num_epochs = max(8, int(self.num_epochs * self.beta_decay))
+        # self.subsample_rate = round(1.0 / self.beta)
+
         return fields
 
 class BehavioralCloningOptimizer(object):
@@ -222,6 +268,8 @@ class BehavioralCloningOptimizer(object):
             ('ent', ent, float), # entropy of action distributions
             ('ttotal', self.total_time, float), # total time
             ('nsa', self.total_num_sa, int), # total time
+            ('max_mem', int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1000.), int), # max mem usage
+            ('cur_mem', int(psutil.Process(os.getpid()).memory_info().rss / 1024 ** 2), int), # cur mem usage
         ]
         self.curr_iter += 1
         return fields
@@ -723,6 +771,8 @@ class ImitationOptimizer(object):
             ('tadv', t_adv.dt + t_vf_fit.dt, float), # time for advantage computation
             ('tstep', t_step.dt, float), # time for step computation
             ('ttotal', self.total_time, float), # total time
+            ('max_mem', int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1000.), int), # max mem usage
+            ('cur_mem', int(psutil.Process(os.getpid()).memory_info().rss / 1024 ** 2), int), # cur mem usage
         ]
         self.curr_iter += 1
         return fields

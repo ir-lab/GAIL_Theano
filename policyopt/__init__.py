@@ -4,6 +4,7 @@ import numpy as np
 import multiprocessing
 from time import sleep
 import binascii
+import pandas as pd
 
 # State/action spaces
 class Space(object):
@@ -147,6 +148,25 @@ class TrajBatch(object):
         for i, traj in enumerate(self.trajs):
             traj.save_h5(f.require_group('%06d' % (i+starting_id)), **kwargs)
 
+    def dataframes(self, **kwargs):
+        
+        traj_df = pd.DataFrame()
+        for traj_idx, traj in enumerate(self.trajs):
+            tdf = pd.DataFrame()
+            tdata = np.hstack([np.arange(len(traj)).reshape(-1,1), traj.a_T_Da, traj.obs_T_Do, traj.r_T.reshape(-1,1)])
+            tcols =  ['time'] +  [f'act_{i}' for i in range(traj.a_T_Da.shape[1])] + \
+                    [f'obs_{i}' for i in range(traj.obs_T_Do.shape[1])] + ['reward']
+            
+            tdf[tcols] = tdata
+            
+            tdf['rollout'] = [traj_idx]*tdf.shape[0]
+            for key, val in kwargs.items():
+                tdf[key] = [val]*tdf.shape[0]
+            
+            traj_df = pd.concat([traj_df, tdf])
+
+        return traj_df
+
     @classmethod
     def LoadH5(cls, dset, obsfeat_fn):
         return cls.FromTrajs([Trajectory.LoadH5(v, obsfeat_fn) for k, v in dset.iteritems()])
@@ -262,7 +282,12 @@ class MDP(object):
         if dagger_eval:
             assert alg_name == 'dagger'
         
+        # import resource
+        # try:
+        #     resource.setrlimit(resource.RLIMIT_AS, (1000,1000))
         sim = self.new_sim(init_state=init_state)
+        # except Exception as exc:
+        #     print(exc)
         
         if record_gif:
             sim.env.unwrapped.set_gif_recording(gif_export_dir, gif_prefix, gif_export_suffix)
@@ -290,12 +315,13 @@ class MDP(object):
                     expert_a, novice_a = policy_fn(obsfeat[-1], sim.env)
                     actions.append(expert_a)
                     actiondists.append([[-1, -1]])
-                    beta = np.random.uniform(low=0.0, high=1.0)
-                    if beta < dagger_action_beta:
-                        action = novice_a[0,:]
-                    else:
-                        action = expert_a[0,:]
-                    rewards.append(sim.step(action))
+                    action = dagger_action_beta*expert_a + (1. - dagger_action_beta)*novice_a
+                    # beta = np.random.rand()
+                    # if beta < dagger_action_beta:
+                    #     action = novice_a[0,:]
+                    # else:
+                    #     action = expert_a[0,:]
+                    rewards.append(sim.step(action[0,:]))
                 
                 if sim.done: break
         

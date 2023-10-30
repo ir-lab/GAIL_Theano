@@ -8,7 +8,7 @@ from enum import Enum
 import theano
 from theano import tensor
 
-from abc import abstractmethod
+from abc import abstractmethod, abstractproperty
 
 
 class BCloneLossFn(Enum):
@@ -17,8 +17,7 @@ class BCloneLossFn(Enum):
 
 
 class Policy(nn.Model):
-    def __init__(self, obsfeat_space, action_space, num_actiondist_params, enable_obsnorm, varscope_name, 
-                 bclone_loss_fn=BCloneLossFn.LOG_PROB, bclone_l1_lambda=0.0, bclone_l2_lambda=0.0):
+    def __init__(self, obsfeat_space, action_space, num_actiondist_params, enable_obsnorm, varscope_name, bclone_l1_lambda=0.0, bclone_l2_lambda=0.0):
         self.obsfeat_space, self.action_space, self._num_actiondist_params = obsfeat_space, action_space, num_actiondist_params
 
         with nn.variable_scope(varscope_name) as self.__varscope:
@@ -34,43 +33,52 @@ class Policy(nn.Model):
         # Only code above this line (i.e. _make_actiondist_ops) is allowed to make trainable variables.
         param_vars = self.get_trainable_variables()
 
-        # Reinforcement learning
         input_actions_B_Da = tensor.matrix(name='input_actions_B_Da', dtype=theano.config.floatX if self.action_space.storage_type == float else 'int64')
-        logprobs_B = self._make_actiondist_logprob_ops(actiondist_B_Pa, input_actions_B_Da)
-        # Proposal distribution from old policy
-        proposal_actiondist_B_Pa = tensor.matrix(name='proposal_actiondist_B_Pa')
-        proposal_logprobs_B = self._make_actiondist_logprob_ops(proposal_actiondist_B_Pa, input_actions_B_Da)
-        # Local RL objective
-        advantage_B = tensor.vector(name='advantage_B')
-        impweight_B = tensor.exp(logprobs_B - proposal_logprobs_B)
-        obj = (impweight_B*advantage_B).mean()
-        objgrad_P = thutil.flatgrad(obj, param_vars)
-        # KL divergence from old policy
-        kl_B = self._make_actiondist_kl_ops(proposal_actiondist_B_Pa, actiondist_B_Pa)
-        kl = kl_B.mean()
-        compute_obj_kl = thutil.function([obsfeat_B_Df, input_actions_B_Da, proposal_actiondist_B_Pa, advantage_B], [obj, kl])
-        compute_obj_kl_with_grad = thutil.function([obsfeat_B_Df, input_actions_B_Da, proposal_actiondist_B_Pa, advantage_B], [obj, kl, objgrad_P])
-        # KL Hessian-vector product
-        v_P = tensor.vector(name='v')
-        klgrad_P = thutil.flatgrad(kl, param_vars)
-        hvpexpr = thutil.flatgrad((klgrad_P*v_P).sum(), param_vars)
-        # hvpexpr = tensor.Rop(klgrad_P, param_vars, thutil.unflatten_into_tensors(v_P, [v.get_value().shape for v in param_vars]))
-        hvp = thutil.function([obsfeat_B_Df, proposal_actiondist_B_Pa, v_P], hvpexpr)
-        compute_hvp = lambda _obsfeat_B_Df, _input_actions_B_Da, _proposal_actiondist_B_Pa, _advantage_B, _v_P: hvp(_obsfeat_B_Df, _proposal_actiondist_B_Pa, _v_P)
-        # TRPO step
-        self._ngstep = optim.make_ngstep_func(self, compute_obj_kl, compute_obj_kl_with_grad, compute_hvp)
+        
+        if self.bclone_loss_fn == BCloneLossFn.LOG_PROB:
+            assert not isinstance(self, DeterministicPolicy)
+            # Reinforcement learning
+            logprobs_B = self._make_actiondist_logprob_ops(actiondist_B_Pa, input_actions_B_Da)
+            # Proposal distribution from old policy
+            proposal_actiondist_B_Pa = tensor.matrix(name='proposal_actiondist_B_Pa')
+            proposal_logprobs_B = self._make_actiondist_logprob_ops(proposal_actiondist_B_Pa, input_actions_B_Da)
+            # Local RL objective
+            advantage_B = tensor.vector(name='advantage_B')
+            impweight_B = tensor.exp(logprobs_B - proposal_logprobs_B)
+            obj = (impweight_B*advantage_B).mean()
+            objgrad_P = thutil.flatgrad(obj, param_vars)
+            # KL divergence from old policy
+            kl_B = self._make_actiondist_kl_ops(proposal_actiondist_B_Pa, actiondist_B_Pa)
+            kl = kl_B.mean()
+            compute_obj_kl = thutil.function([obsfeat_B_Df, input_actions_B_Da, proposal_actiondist_B_Pa, advantage_B], [obj, kl])
+            compute_obj_kl_with_grad = thutil.function([obsfeat_B_Df, input_actions_B_Da, proposal_actiondist_B_Pa, advantage_B], [obj, kl, objgrad_P])
+            # KL Hessian-vector product
+            v_P = tensor.vector(name='v')
+            klgrad_P = thutil.flatgrad(kl, param_vars)
+            hvpexpr = thutil.flatgrad((klgrad_P*v_P).sum(), param_vars)
+            # hvpexpr = tensor.Rop(klgrad_P, param_vars, thutil.unflatten_into_tensors(v_P, [v.get_value().shape for v in param_vars]))
+            hvp = thutil.function([obsfeat_B_Df, proposal_actiondist_B_Pa, v_P], hvpexpr)
+            compute_hvp = lambda _obsfeat_B_Df, _input_actions_B_Da, _proposal_actiondist_B_Pa, _advantage_B, _v_P: hvp(_obsfeat_B_Df, _proposal_actiondist_B_Pa, _v_P)
+            # TRPO step
+            self._ngstep = optim.make_ngstep_func(self, compute_obj_kl, compute_obj_kl_with_grad, compute_hvp)
 
+            # Supervised learning objective: log likelihood of actions given state
+            bclone_loss = -logprobs_B.mean()
+
+            self.compute_action_logprobs = thutil.function(
+                [obsfeat_B_Df, input_actions_B_Da],
+                logprobs_B)
+
+        elif self.bclone_loss_fn == BCloneLossFn.MSE:
+            assert isinstance(self, DeterministicPolicy)
+            means_B_Da, _ = self._extract_actiondist_params(actiondist_B_Pa)
+            # Supervised learning objective: MSE of mean action / optimal action
+            bclone_loss = tensor.sqr(means_B_Da - input_actions_B_Da).sum(axis=1).mean()
+        
         ##### Publicly-exposed functions #####
         # for debugging
         self.compute_internal_normalized_obsfeat = thutil.function([obsfeat_B_Df], normalized_obsfeat_B_Df)
 
-        # Supervised learning objective: log likelihood of actions given state
-        if bclone_loss_fn == BCloneLossFn.LOG_PROB:
-            bclone_loss = -logprobs_B.mean()
-        elif bclone_loss_fn == BCloneLossFn.MSE:
-            means_B_Da, stdevs_B_Da = self._extract_actiondist_params(actiondist_B_Pa)
-            bclone_loss = tensor.sqr(means_B_Da - input_actions_B_Da).sum(axis=1).mean()
-        
         reg_term = 0.0
         if bclone_l1_lambda > 0.0 or bclone_l2_lambda > 0.0:
             nn_vars = [v for v in param_vars if v.name.split('/')[-1] in ['W', 'b']] # Only get the weights and biases
@@ -83,7 +91,7 @@ class Policy(nn.Model):
             reg_term += bclone_l2_lambda*tensor.sqr(nn_values).sum()
         
         bclone_loss_full = bclone_loss + reg_term
-        
+
         bclone_lr = tensor.scalar(name='bclone_lr')
         self.step_bclone = thutil.function(
             [obsfeat_B_Df, input_actions_B_Da, bclone_lr],
@@ -96,13 +104,12 @@ class Policy(nn.Model):
             [obsfeat_B_Df, input_actions_B_Da],
             bclone_loss)
 
-        self.compute_action_logprobs = thutil.function(
-            [obsfeat_B_Df, input_actions_B_Da],
-            logprobs_B)
-
 
     @property
     def varscope(self): return self.__varscope
+
+    @abstractproperty
+    def bclone_loss_fn(self) -> BCloneLossFn: pass
 
     def update_obsnorm(self, obs_B_Do):
         '''Update observation normalization using a moving average'''
@@ -126,10 +133,65 @@ class Policy(nn.Model):
     def _compute_actiondist_entropy(self, actiondist_B_Pa): pass
 
 
+DeterministicPolicyConfig = namedtuple('DeterministicPolicyConfig', 'hidden_spec, enable_obsnorm')
+class DeterministicPolicy(Policy):
+    def __init__(self, cfg, obsfeat_space, action_space, varscope_name, bclone_l1_lambda=0.0, bclone_l2_lambda=0.0):
+        assert isinstance(cfg, DeterministicPolicyConfig)
+        assert isinstance(obsfeat_space, ContinuousSpace) and isinstance(action_space, ContinuousSpace)
+
+        self.cfg = cfg
+        Policy.__init__(
+            self,
+            obsfeat_space=obsfeat_space,
+            action_space=action_space,
+            num_actiondist_params=action_space.dim,
+            enable_obsnorm=cfg.enable_obsnorm,
+            varscope_name=varscope_name,
+            bclone_l1_lambda=bclone_l1_lambda,
+            bclone_l2_lambda=bclone_l2_lambda)
+
+
+    def _make_actiondist_ops(self, obsfeat_B_Df):
+        # Computes action distribution mean (of a Gaussian) using MLP
+        with nn.variable_scope('hidden'):
+            net = nn.FeedforwardNet(obsfeat_B_Df, (self.obsfeat_space.dim,), self.cfg.hidden_spec)
+        with nn.variable_scope('out'):
+            mean_layer = nn.AffineLayer(net.output, net.output_shape, (self.action_space.dim,), initializer=np.zeros((net.output_shape[0], self.action_space.dim)))
+            assert mean_layer.output_shape == (self.action_space.dim,)
+        actiondist_B_Pa = means_B_Da = mean_layer.output
+        return actiondist_B_Pa
+
+    def _extract_actiondist_params(self, actiondist_B_Pa):
+        means_B_Da = actiondist_B_Pa
+        return means_B_Da, None
+
+    def _make_actiondist_logprob_ops(self, actiondist_B_Pa, input_actions_B_Da):
+        return None
+
+    def _make_actiondist_kl_ops(self, proposal_actiondist_B_Pa, actiondist_B_Pa):
+        return None
+
+    def _sample_from_actiondist(self, actiondist_B_Pa, deterministic=True):
+        assert deterministic == True, "This policy only supports deterministic actions!"
+        means_B_Da = actiondist_B_Pa
+        return means_B_Da
+
+    def _compute_actiondist_entropy(self, actiondist_B_Pa):
+        return None
+
+    def compute_actiondist_mean(self, obsfeat_B_Df):
+        actiondist_B_Pa = self._compute_action_dist_params(obsfeat_B_Df)
+        means_B_Da, _ = self._extract_actiondist_params(actiondist_B_Pa)
+        return means_B_Da
+
+    @property
+    def bclone_loss_fn(self):
+        return BCloneLossFn.MSE
+
+
 GaussianPolicyConfig = namedtuple('GaussianPolicyConfig', 'hidden_spec, min_stdev, init_logstdev, enable_obsnorm')
 class GaussianPolicy(Policy):
-    def __init__(self, cfg, obsfeat_space, action_space, varscope_name, 
-                 bclone_loss_fn=BCloneLossFn.LOG_PROB, bclone_l1_lambda=0.0, bclone_l2_lambda=0.0):
+    def __init__(self, cfg, obsfeat_space, action_space, varscope_name, bclone_l1_lambda=0.0, bclone_l2_lambda=0.0):
         assert isinstance(cfg, GaussianPolicyConfig)
         assert isinstance(obsfeat_space, ContinuousSpace) and isinstance(action_space, ContinuousSpace)
 
@@ -141,7 +203,6 @@ class GaussianPolicy(Policy):
             num_actiondist_params=action_space.dim*2,
             enable_obsnorm=cfg.enable_obsnorm,
             varscope_name=varscope_name,
-            bclone_loss_fn=bclone_loss_fn,
             bclone_l1_lambda=bclone_l1_lambda,
             bclone_l2_lambda=bclone_l2_lambda)
 
@@ -195,6 +256,11 @@ class GaussianPolicy(Policy):
         means_B_Da, _ = self._extract_actiondist_params(actiondist_B_Pa)
         return means_B_Da
 
+    @property
+    def bclone_loss_fn(self):
+        return BCloneLossFn.LOG_PROB
+
+
 GibbsPolicyConfig = namedtuple('GibbsPolicyConfig', 'hidden_spec, enable_obsnorm')
 class GibbsPolicy(Policy):
     def __init__(self, cfg, obsfeat_space, action_space, varscope_name):
@@ -237,6 +303,10 @@ class GibbsPolicy(Policy):
 
     def _compute_actiondist_entropy(self, actiondist_B_Pa):
         return util.categorical_entropy(np.exp(actiondist_B_Pa))
+
+    @property
+    def bclone_loss_fn(self):
+        return BCloneLossFn.LOG_PROB
 
 
 def compute_qvals(r, gamma):
